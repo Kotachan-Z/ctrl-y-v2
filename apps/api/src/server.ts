@@ -4,6 +4,7 @@ import { bodyLimit } from "hono/body-limit";
 import { HTTPException } from "hono/http-exception";
 
 import { authenticate, familyId, isUuid, issueToken, parentOnly, type AuthEnv } from "./auth.js";
+import { createFailureLimiter } from "./rate-limit.js";
 import type { AuthRepository } from "./repository.js";
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -23,13 +24,14 @@ async function body(request: Request): Promise<Record<string, unknown>> {
 }
 function credentials(data: Record<string, unknown>) {
   const email = typeof data.email === "string" ? data.email.trim().toLowerCase() : "";
-  if (email.length > 254 || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email))
+  if (email.includes("\u0000") || email.length > 254 || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email))
     throw new HTTPException(400, { message: "メールアドレスを確認してください" });
   return { email, password: secretText(data.password, 8, "パスワード") };
 }
 function secretText(value: unknown, min: number, label: string) {
   if (
     typeof value !== "string" ||
+    value.includes("\u0000") ||
     Array.from(value).length < min ||
     !value.trim() ||
     new TextEncoder().encode(value).length > 72
@@ -40,7 +42,12 @@ function secretText(value: unknown, min: number, label: string) {
   return value;
 }
 function childName(value: unknown) {
-  if (typeof value !== "string" || !value.trim() || Array.from(value.trim()).length > 50)
+  if (
+    typeof value !== "string" ||
+    value.includes("\u0000") ||
+    !value.trim() ||
+    Array.from(value.trim()).length > 50
+  )
     throw new HTTPException(400, { message: "名前は1〜50文字にしてください" });
   return value.trim();
 }
@@ -54,6 +61,7 @@ export function createApp(options: {
     typeof options.repository === "function" ? options.repository() : options.repository;
   const auth = authenticate(options.jwtSecret, repo);
   const app = new Hono<AuthEnv>();
+  const limit = createFailureLimiter();
   app.onError((error, c) => {
     if (error instanceof HTTPException) return c.json({ error: error.message }, error.status);
     console.error("API request failed", error);
@@ -70,26 +78,30 @@ export function createApp(options: {
   app.get("/api/health", (c) => c.json({ status: "ok" }));
   app.post("/api/parents", async (c) => {
     const { email, password } = credentials(await body(c.req.raw));
-    const parent = await repo().register(email, await hash(password, 12));
-    if (!parent) return c.json({ error: "このメールアドレスは登録済みです" }, 409);
-    return c.json(
-      {
-        token: await issueToken({ id: parent.id, role: "parent" }, options.jwtSecret),
-        parent: { id: parent.id, email: parent.email },
-        needsSetup: true,
-      },
-      201,
-    );
+    return limit(`register:${email}`, async () => {
+      const parent = await repo().register(email, await hash(password, 12));
+      if (!parent) return c.json({ error: "このメールアドレスは登録済みです" }, 409);
+      return c.json(
+        {
+          token: await issueToken({ id: parent.id, role: "parent" }, options.jwtSecret),
+          parent: { id: parent.id, email: parent.email },
+          needsSetup: true,
+        },
+        201,
+      );
+    });
   });
   app.post("/api/parents/login", async (c) => {
     const { email, password } = credentials(await body(c.req.raw));
-    const parent = await repo().parentByEmail(email);
-    if (!parent || !(await compare(password, parent.passwordHash)))
-      return c.json({ error: "メールアドレスまたはパスワードが違います" }, 401);
-    return c.json({
-      token: await issueToken({ id: parent.id, role: "parent" }, options.jwtSecret),
-      parent: { id: parent.id, email: parent.email },
-      needsSetup: (await repo().listChildren(parent.id)).length === 0,
+    return limit(`login:${email}`, async () => {
+      const parent = await repo().parentByEmail(email);
+      if (!parent || !(await compare(password, parent.passwordHash)))
+        return c.json({ error: "メールアドレスまたはパスワードが違います" }, 401);
+      return c.json({
+        token: await issueToken({ id: parent.id, role: "parent" }, options.jwtSecret),
+        parent: { id: parent.id, email: parent.email },
+        needsSetup: (await repo().listChildren(parent.id)).length === 0,
+      });
     });
   });
   app.post("/api/setup", auth, parentOnly, async (c) => {
@@ -115,12 +127,17 @@ export function createApp(options: {
     const id = c.req.param("childId");
     if (!isUuid(id)) return c.json({ error: "ログインURLを確認してください" }, 400);
     const keyword = secretText((await body(c.req.raw)).keyword, 4, "あいことば");
-    const record = await repo().childById(id);
-    if (!record || !record.parent.keyword || !(await compare(keyword, record.parent.keyword)))
-      return c.json({ error: "ログインURLまたはあいことばが違います" }, 401);
-    return c.json({
-      token: await issueToken({ id, role: "child", parentId: record.parent.id }, options.jwtSecret),
-      child: { id, name: record.child.name },
+    return limit(`child:${id.toLowerCase()}`, async () => {
+      const record = await repo().childById(id);
+      if (!record || !record.parent.keyword || !(await compare(keyword, record.parent.keyword)))
+        return c.json({ error: "ログインURLまたはあいことばが違います" }, 401);
+      return c.json({
+        token: await issueToken(
+          { id, role: "child", parentId: record.parent.id },
+          options.jwtSecret,
+        ),
+        child: { id, name: record.child.name },
+      });
     });
   });
   // Used by guards to validate expiration, identity, and family membership server-side.

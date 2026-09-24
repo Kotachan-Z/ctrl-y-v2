@@ -1,8 +1,9 @@
 # Phase 2a 検証記録
 
 2026-09-24、作業ブランチ `feat/phase2-data-model-auth`。
-実装変更は作業ツリーに保存。commit・push・Firebaseデプロイは行っていません。
-**環境制約によりDoD未達成。マージ可能な検証済み状態ではありません。**
+初回検証時の制約と、その後の検証結果を分けて記録します。
+Phase 2a本体は `9504817` (`feat: Phase 2a — data model and authentication`) として、
+`bun.lock` を含めローカルコミット済みです。
 
 ## 実装
 
@@ -15,7 +16,65 @@
 - APIテスト、DB制約テスト、JWTテスト、認証フローE2E。
 - Firebase用bundleと独立したdist/package.json生成。workspace依存をデプロイ先に持ち込まない。
 
-## DoD結果
+## 初回検証後の結果（オーケストレーター側セッション）
+
+以下は依頼者から引き継いだ検証済みの記録です。
+
+- `bun install`、type-check、oxlint、oxfmt、build: 全て成功。
+- Drizzle + PGLite の generate / migration / seed / verify: 全て成功。
+- API実起動とcurlによる親登録・ログイン・setup・子供ログイン: 成功。
+- Vitest単体テスト: 全件成功。Playwright E2E: 2件成功。
+- `bun.lock` 更新を含めローカルコミット済み（上記コミット）。
+
+## 独立レビュー5件への修正と再検証（2026-09-24）
+
+- 登録は正規化メール、親ログインは正規化メール、子供ログインは小文字化childIdをキーに、別々の失敗カウンタを保持。
+  最初の失敗から60秒以内に5回失敗すると、5回目から60秒ロックアウトし、6回目以降は429。
+  ロック前の成功でリセット、時間経過でもリセット。認証失敗401・登録重複409を数え、入力不正400やサーバーエラー500は数えない。
+  短い共有あいことばへの連続試行を抑えつつ、通常の入力ミスから復帰しやすい閾値とした。
+  Functionsではアプリを遅延初期化して再利用する。Mapはインスタンス内のみで、再起動・複数インスタンス間の制限は保証しない。
+  既に処理中のリクエストは中断しない。外部ストアへの移行は今回の範囲外。
+- 名前・メール・パスワード・あいことばのNUL文字を400で拒否。
+- `firebase-admin` をAPIとdistの直接依存から削除。`firebase-functions` の必須peer依存なので、lockfileと間接インストールには残る。
+  `bun.lock` も更新し、Bunによる依存配置の再計算を反映。
+- 生成済み `apps/api/dist/package.json` にscriptsがないことを確認し、元の `gcp-build` を削除。
+  Functionsのignoreは `node_modules`、`.git`、Firebaseのデバッグログに整理。
+
+| 検証                                                                                                                                     | 今回の結果                                                                                                                                                                                             |
+| ---------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `bun --bun oxfmt --check`                                                                                                                | 成功                                                                                                                                                                                                   |
+| `bun --bun oxlint`                                                                                                                       | 成功、警告・エラー0                                                                                                                                                                                    |
+| `bun run type-check`                                                                                                                     | 成功                                                                                                                                                                                                   |
+| `bun run build`                                                                                                                          | 成功。distにbuildスクリプト・firebase-admin直接依存がないことも確認                                                                                                                                    |
+| `bun run --filter @ctrl-y/api test`                                                                                                      | 成功、5ファイル・20テスト。3エンドポイントの429、識別子の分離、ロック中の正しい認証の拒否、60秒境界、成功リセット、未ロックの時間窓失効、NUL拒否を含む                                                 |
+| `bun run --filter @ctrl-y/database generate`                                                                                             | 成功、スキーマ差分なし                                                                                                                                                                                 |
+| `bun run --filter @ctrl-y/database migration` / `seed` / `verify`                                                                        | 全て成功。`PGLITE_PATH=/private/tmp/ctrl-y-review-20260924` を使用                                                                                                                                     |
+| API実起動 + curl                                                                                                                         | 起動失敗（Bunはlisten時にEADDRINUSE）。ポート自動割当のNode listenでもEPERMを確認し、サンドボックス制約と判明。curlも接続失敗。実通信による認証フロー・429は未確認。VitestのHonoリクエストでは確認済み |
+| `bun run test:e2e`                                                                                                                       | 再実行したがサーバー起動で失敗。`DEBUG=pw:webserver` でViteのlisten EPERMとlocalhost接続EPERMを確認。今回のE2E本体は未実行                                                                             |
+| `bun install`                                                                                                                            | temp/cache書込拒否。許可されたtmp/cacheに変更するとネットワーク拒否。既存のインストール済み依存で上記検証を実施                                                                                        |
+| `TMPDIR=/private/tmp BUN_INSTALL_CACHE_DIR=/private/tmp/ctrl-y-bun-cache bun install --frozen-lockfile --lockfile-only --ignore-scripts` | 成功。lockfileの検査・保存のみで、依存の新規取得成功を意味しない                                                                                                                                       |
+
+## オーケストレーター側セッションでの追加検証（2026-09-24、修正後）
+
+上記の5件の修正について、サンドボックス制約のないオーケストレーター側セッションで実機検証した。
+
+- `bun install`: 変更なし（`Checked 364 installs across 514 packages (no changes)`）。
+- `bun --bun oxfmt --check` / `bun --bun oxlint` / `bun run type-check` / `bun run build`: 全て成功。
+- `apps/api/dist/package.json` を実際に確認し、`firebase-admin` が依存に含まれないことを確認。
+- `bun run --filter @ctrl-y/api test`: 5ファイル・20テスト全件成功（rate-limit.spec.ts 6件、NUL拒否テスト含む）。
+- DB: `generate` / `migration` / `seed` / `verify` 全て成功。
+- API実起動 + curl:
+  - 誤ったパスワードで6回連続ログイン試行 → 1〜5回目は401、6回目で429を確認。
+  - NUL文字を含むメールアドレスでの登録試行 → 400を確認。
+  - 別のメールアドレスでの新規登録 → レート制限の影響を受けず201を確認（識別子ごとの分離を実証）。
+- `bun run test:e2e`: 2件成功（smoke, auth）。
+
+Codexによる修正実装は正しく機能することを実通信で確認済み。
+
+## 初回検証時のDoD結果（履歴）
+
+この時点では未コミットで、環境制約によりDoD未達成と判定していた。
+以下は当時の結果であり、現在の本体の検証・コミット状態ではない。
 
 | 項目 | 結果         | 実行結果                                                                                                                                                                                                                                                           |
 | ---- | ------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
@@ -41,10 +100,11 @@ bun run --filter @ctrl-y/api test -- test/database.spec.ts test/tokens.spec.ts
 タスクの複合外部キー、給与月ユニーク・金額制約、親子JWT、親限定認可、
 署名改ざん・異なる署名キー・期限切れ・リセット用途・不正ロール・家族不整合の拒否。
 
-## 残作業
+## 初回検証時に記録した残作業（履歴）
 
-ネットワーク・localhost bindが許可された環境で依存を取得し、全検証を再実行する必要があります。
-**bun.lockは更新できていません。現在のpackage.jsonとは不一致なのでCIのfrozen installも未達成です。**
+当時はネットワーク・localhost bindが許可された環境での依存取得と全検証の再実行が必要だった。
+`bun.lock` も未更新だったが、その後オーケストレーター側で更新・検証・コミット済み。
+以下のコマンド一覧は再検証手順として残す。
 
 ```sh
 bun install

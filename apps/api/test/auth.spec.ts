@@ -240,3 +240,26 @@ test("family helper returns parent scope and missing secret fails closed", () =>
   expect(familyId({ role: "child", id: "child", parentId: "parent" })).toBe("parent");
   expect(() => createApp({ repository: fixture.repository, jwtSecret: "" })).toThrow("JWT_SECRET");
 });
+
+test("validation rejects NUL in email, passwords, names and keywords", async () => {
+  for (const path of ["/parents", "/parents/login"]) {
+    for (const data of [
+      { email: "nul\u0000@example.test", password },
+      { email: "nul@example.test", password: "password\u0000-123" },
+    ]) {
+      expect((await request(path, data)).status).toBe(400);
+    }
+  }
+  const parent = await register();
+  for (const data of [
+    { name: "は\u0000な", keyword },
+    { name: "はな", keyword: "ひみつ\u0000ことば" },
+  ]) {
+    expect((await request("/setup", data, parent.token)).status).toBe(400);
+  }
+  const child = await setup(parent.token);
+  expect((await request("/children", { name: "は\u0000な" }, parent.token)).status).toBe(400);
+  expect(
+    (await request(`/children/${child.id}/login`, { keyword: "ひみつ\u0000ことば" })).status,
+  ).toBe(400);
+});

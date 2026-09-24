@@ -29,7 +29,6 @@ writeFileSync(
       engines: source.engines,
       dependencies: {
         "firebase-functions": source.dependencies["firebase-functions"],
-        "firebase-admin": source.dependencies["firebase-admin"],
         "@hono/node-server": source.dependencies["@hono/node-server"],
       },
     },

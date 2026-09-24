@@ -5,10 +5,11 @@ import { createApp } from "./server.js";
 
 // Production Postgres wiring is intentionally deferred. Never use ephemeral
 // Functions storage as the account database. Health remains available.
+let app: ReturnType<typeof createApp> | undefined;
 export const api = onRequest(
   { region: "asia-northeast1", secrets: ["JWT_SECRET"] },
   (request, response) => {
-    const app = createApp({
+    app ??= createApp({
       jwtSecret: process.env.JWT_SECRET ?? "",
       repository: () => {
         throw new Error("Production database adapter is not configured");
