@@ -5,7 +5,7 @@
     "predeploy": ["bun run --filter @ctrl-y/web build"],
     "rewrites": [
       {
-        "source": "/health",
+        "source": "/api/**",
         "function": {
           "functionId": "api",
           "region": "asia-northeast1"
@@ -19,7 +19,7 @@
   },
   "functions": [
     {
-      "source": "apps/api",
+      "source": "apps/api/dist",
       "codebase": "api",
       "runtime": "nodejs22",
       "ignore": ["node_modules", ".git", "test", "src", "*.ts", "tsconfig*.json"],

@@ -3,7 +3,8 @@
 親子向けタスク報酬管理アプリ「Ctrl-Y（ご褒美ポケット）」の技術スタック刷新版。
 元プロジェクト: https://github.com/ctrl-Yc/Ctrl-Y （機能仕様の参照のみ。コード移植なし）
 
-Phase 1 は開発基盤のみ。タスク・報酬・認証などの製品機能は未実装です。
+Phase 2a: 親・子供の認証とデータモデルを実装しています。タスク管理・給与集計・通知・PWAは後続フェーズです。
+検証状況と環境制約は [Phase 2a 検証記録](docs/phase-2a-verification.md) を参照してください。
 
 ## 構成
 
@@ -28,6 +29,7 @@ Terraform、Docker、Next.js は使用しません。
 mise trust
 mise install
 bun install
+cp apps/api/.env.example apps/api/.env.local
 bunx --no-install lefthook install
 bunx --no-install playwright install chromium
 mise run dev
@@ -43,9 +45,9 @@ DB の migration・seed・検証、開発サーバー起動、Playwright E2E は
 `mise run dev` はリポジトリ直下の **`.pglite/` を毎回削除**し、
 migration → seed → Turbo dev の順で起動します。開発データを残す場合は `bun run dev` を使用します。
 
-- Web: http://127.0.0.1:5173 — `Ctrl-Y v2 — Coming soon`
-- API: http://127.0.0.1:3000/health — `{"status":"ok"}`
-- Web の `/health` は Vite proxy 経由で API に到達します。
+- Web: http://127.0.0.1:5173 — 親ログイン
+- API: http://127.0.0.1:3000/api/health — `{"status":"ok"}`
+- Web の `/api/*` は Vite proxy 経由で API に到達します。
 - ポート 3000 が使用中なら `API_PORT=3300 bun run dev` で API と proxy を切り替えられます。
 
 ## 開発コマンド
@@ -73,17 +75,42 @@ pre-commit は frozen install の dry-run → format → lint --fix → 型検�
 ## データベース
 
 ローカルは `.pglite/database`、PostgreSQL dialect、`snake_case`、timestamp prefix の migration を使用。
-`users` と固定 ID の seed は疎通確認専用で、製品のユーザー・認証モデルではありません。
+`parents` / `children` / `tasks` / `payroll` の4テーブルです。
+Phase 1 の migration は再生成済みのため、既存の疎通確認DBは `mise run dev` で初期化してください。
+seed は `parent@example.test` / `local-password`、子供のあいことばは `ひみつのことば` です（開発専用）。
+`PGLITE_PATH` でローカルDBの保存先を差し替えられます。APIとmigrationには同じ絶対パスを渡してください。
 本番 DB は Supabase PostgreSQL を予定していますが、本 PR では接続・資格情報・本番 migration の適用は実装しません。
 
 ## Firebase
 
-- Hosting: `apps/web/dist`。SPA fallback と `/health` → `api` Functions rewrite。
-- Functions: `apps/api` → `dist/functions.js`、第2世代 Node.js 22、`asia-northeast1`。
+- Hosting: `apps/web/dist`。SPA fallback と `/api/**` → `api` Functions rewrite。
+- Functions: `apps/api/dist` → `functions.js`、第2世代 Node.js 22、`asia-northeast1`。
 - `server.ts` の Hono アプリを Bun の `entry.ts` と Firebase の `functions.ts` で共有。
-- Functions は `@hono/node-server` の `getRequestListener` と `onRequest` で統合し、TypeScript を Node.js ESM にビルド。
+- Functions は `@hono/node-server` の `getRequestListener` と `onRequest` で統合し、BunでNode.js ESMへbundleします。`dist/package.json` はFirebase用の独立した依存宣言で、workspace参照を含みません。
 - `firebase.json` の predeploy でそれぞれの成果物をビルド。
 - `.firebaserc` の `demo-ctrl-y-v2` は仮 ID。実際のプロジェクト ID へ置き換えてからデプロイする前提です。
 
 ランタイムは [Firebase の Node.js ランタイム設定](https://firebase.google.com/docs/functions/manage-functions#set_nodejs_version) に準拠。
 この作業では Firebase ログイン・デプロイを行いません。
+
+## Phase 2a 認証
+
+- 親: `/` ログイン、`/signup` 登録、`/setup` 最初の子供＋あいことば設定。
+- 親の `/children` でログインURLの表示・コピー、2人目以降の追加。
+- 子供: `/child/login/:childId`、ログイン後は `/child/top/:childId`。親は `/top`。
+- `POST /api/parents`, `POST /api/parents/login`, `POST /api/setup`,
+  `POST /api/children`, `GET /api/children`, `POST /api/children/:childId/login`。
+  `GET /api/session` は画面ガード用のJWT・アカウント存在確認です。
+- 親・子供のトークンはlocalStorageの別キーに保存。ログアウトも該当ロールだけ削除。
+- JWTはHS256、24時間、用途`access`・issuer・audience・ロールを検証。
+  リセット用トークンは通常認証で拒否します。パスワードリセット機能自体は今回未実装。
+- パスワード・共有あいことばはbcryptjs（cost 12）で保存。
+  パスワード8文字以上、あいことば4文字以上、いずれもUTF-8で72バイト以内。
+  名前は前後の空白を除いて1〜50 Unicodeコードポイント、メールは前後空白除去・小文字化・254文字以内。
+- `JWT_SECRET` は32バイト以上必須。ローカルは `apps/api/.env.local`、
+  Firebaseでは同名Secretを設定します。秘密値のソース内fallbackはありません。
+- 本番DB adapterは未接続です。Functionsの認証APIは接続実装まで利用できません。
+  `createApp` にrepositoryを注入する設計で、ローカルPGLiteを本番で誤使用しません。
+- タスクの状態enumと所有者制約までを定義しています。状態遷移の操作・逆戻り防止は
+  Phase 2bのタスク更新処理で実装します。給与のmonthは対象月1日のDATEです。
+- Playwrightは `.pglite/e2e` にmigrationを適用し、テスト専用JWT_SECRETで起動します。
