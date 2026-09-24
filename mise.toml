@@ -1,0 +1,5 @@
+[tools]
+bun = "1.3.14"
+node = "22.16.0"
+[settings]
+npm.bun = true

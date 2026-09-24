@@ -1,0 +1,21 @@
+pre-commit:
+  parallel: false
+  commands:
+    install:
+      priority: 1
+      run: bun install --frozen-lockfile --dry-run
+    oxfmt:
+      priority: 2
+      run: bun run oxfmt
+      stage_fixed: true
+    oxlint:
+      priority: 3
+      glob: "*.{js,jsx,ts,tsx,mjs,cjs}"
+      run: bun run oxlint --fix {staged_files}
+      stage_fixed: true
+    type-check:
+      priority: 4
+      run: bun run type-check
+    build:
+      priority: 5
+      run: bun run build

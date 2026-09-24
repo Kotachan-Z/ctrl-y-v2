@@ -1,0 +1,23 @@
+{
+  "name": "@ctrl-y/database",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/schema.ts"
+  },
+  "scripts": {
+    "type-check": "tsc --noEmit",
+    "generate": "drizzle-kit generate",
+    "migration": "drizzle-kit migrate",
+    "seed": "bun src/seed.ts",
+    "verify": "bun src/verify.ts"
+  },
+  "dependencies": {
+    "@electric-sql/pglite": "0.4.4",
+    "drizzle-orm": "0.45.2"
+  },
+  "devDependencies": {
+    "drizzle-kit": "0.31.10"
+  }
+}

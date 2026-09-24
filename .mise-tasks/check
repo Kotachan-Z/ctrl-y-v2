@@ -1,0 +1,8 @@
+#!/usr/bin/env bash
+#MISE description="Run formatting, lint, type checks, tests and build"
+set -euo pipefail
+bun run oxfmt --check
+bun run oxlint
+bun run type-check
+bun run test
+bun run build

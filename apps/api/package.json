@@ -1,0 +1,26 @@
+{
+  "name": "@ctrl-y/api",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "main": "dist/functions.js",
+  "scripts": {
+    "dev": "bun --hot src/entry.ts",
+    "build": "tsc -p tsconfig.build.json",
+    "gcp-build": "",
+    "type-check": "tsc --noEmit",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@hono/node-server": "1.19.9",
+    "firebase-admin": "13.6.0",
+    "firebase-functions": "7.2.2",
+    "hono": "4.12.10"
+  },
+  "devDependencies": {
+    "vitest": "4.1.5"
+  },
+  "engines": {
+    "node": "22"
+  }
+}

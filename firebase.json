@@ -1,0 +1,29 @@
+{
+  "hosting": {
+    "public": "apps/web/dist",
+    "ignore": ["firebase.json", "**/.*", "**/node_modules/**"],
+    "predeploy": ["bun run --filter @ctrl-y/web build"],
+    "rewrites": [
+      {
+        "source": "/health",
+        "function": {
+          "functionId": "api",
+          "region": "asia-northeast1"
+        }
+      },
+      {
+        "source": "**",
+        "destination": "/index.html"
+      }
+    ]
+  },
+  "functions": [
+    {
+      "source": "apps/api",
+      "codebase": "api",
+      "runtime": "nodejs22",
+      "ignore": ["node_modules", ".git", "test", "src", "*.ts", "tsconfig*.json"],
+      "predeploy": ["bun run --filter @ctrl-y/api build"]
+    }
+  ]
+}

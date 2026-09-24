@@ -1,0 +1,9 @@
+#!/usr/bin/env bash
+#MISE description="Reset local PGLite, migrate, seed, and start apps"
+set -euo pipefail
+cd "$(dirname "$0")/.."
+rm -rf -- .pglite
+mkdir -p .pglite
+bun run --filter @ctrl-y/database migration
+bun run --filter @ctrl-y/database seed
+exec bun run dev

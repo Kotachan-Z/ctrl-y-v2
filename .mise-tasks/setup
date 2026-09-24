@@ -1,0 +1,5 @@
+#!/usr/bin/env bash
+#MISE description="Install dependencies and Git hooks"
+set -euo pipefail
+bun install --frozen-lockfile
+bunx --no-install lefthook install
