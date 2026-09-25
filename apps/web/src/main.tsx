@@ -248,13 +248,209 @@ function ChildLogin() {
     </>
   );
 }
+type Task = {
+  id: string;
+  name: string;
+  memo: string | null;
+  reward: number;
+  deadline: string;
+  childId: string | null;
+  status: "TODO" | "IN_PROGRESS" | "WAIT_REVIEW" | "DONE";
+};
+const taskLabels = {
+  TODO: "これから",
+  IN_PROGRESS: "進行中",
+  WAIT_REVIEW: "確認待ち",
+  DONE: "完了",
+};
+function TaskEditor({ task, save }: { task?: Task; save: (data: FormData) => Promise<void> }) {
+  const localDeadline = task
+    ? new Date(
+        new Date(task.deadline).getTime() - new Date(task.deadline).getTimezoneOffset() * 60000,
+      )
+        .toISOString()
+        .slice(0, 16)
+    : "";
+  return (
+    <Form label={task ? "保存する" : "タスクを作成"} submit={save}>
+      <label>
+        タスク名
+        <input name="name" required maxLength={100} defaultValue={task?.name} />
+      </label>
+      <label>
+        メモ
+        <textarea name="memo" maxLength={2000} defaultValue={task?.memo ?? ""} />
+      </label>
+      <label>
+        報酬（円）
+        <input
+          name="reward"
+          type="number"
+          required
+          min={0}
+          max={2147483647}
+          step={1}
+          defaultValue={task?.reward ?? 0}
+        />
+      </label>
+      <label>
+        期限
+        <input name="deadline" type="datetime-local" required defaultValue={localDeadline} />
+      </label>
+    </Form>
+  );
+}
+function TaskBoard({ role, childId }: { role: Role; childId?: string }) {
+  const [tasks, setTasks] = useState<Task[]>([]);
+  const [loaded, setLoaded] = useState(false);
+  const [error, setError] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [editing, setEditing] = useState<string | null>(null);
+  const [version, setVersion] = useState(0);
+  const navigate = useNavigate();
+  function report(e: unknown) {
+    setError(e instanceof Error ? e.message : "通信に失敗しました");
+    if (e instanceof ApiError && e.status === 401)
+      void navigate(role === "parent" ? "/" : `/child/login/${childId}`, { replace: true });
+  }
+  useEffect(() => {
+    let active = true;
+    api<{ tasks: Task[] }>("/tasks", { role })
+      .then((result) => {
+        if (active) {
+          setTasks(result.tasks);
+          setLoaded(true);
+        }
+      })
+      .catch((e: unknown) => {
+        if (active) setError(e instanceof Error ? e.message : "通信に失敗しました");
+      });
+    return () => {
+      active = false;
+    };
+  }, [role, version]);
+  async function mutate(task: Task, status?: Task["status"]) {
+    if (!status && !window.confirm(`「${task.name}」を削除しますか？`)) return;
+    setBusy(true);
+    setError("");
+    try {
+      await api(`/tasks/${task.id}${status ? "/status" : ""}`, {
+        role,
+        method: status ? "PATCH" : "DELETE",
+        ...(status ? { body: { status } } : {}),
+      });
+      setVersion((v) => v + 1);
+    } catch (e) {
+      report(e);
+      setVersion((v) => v + 1);
+    } finally {
+      setBusy(false);
+    }
+  }
+  async function save(data: FormData, task?: Task) {
+    try {
+      const deadline = data.get("deadline");
+      if (typeof deadline !== "string") throw new Error("期限を入力してください");
+      await api(task ? `/tasks/${task.id}` : "/tasks", {
+        role,
+        method: task ? "PATCH" : "POST",
+        body: {
+          name: data.get("name"),
+          memo: data.get("memo"),
+          reward: Number(data.get("reward")),
+          deadline: new Date(deadline).toISOString(),
+        },
+      });
+      setEditing(null);
+      setVersion((v) => v + 1);
+    } catch (e) {
+      report(e);
+      throw e;
+    }
+  }
+  return (
+    <>
+      {role === "parent" && (
+        <section>
+          <h2>タスクを追加</h2>
+          <TaskEditor save={(data) => save(data)} />
+        </section>
+      )}
+      <button
+        disabled={busy}
+        onClick={() => {
+          setError("");
+          setVersion((v) => v + 1);
+        }}
+      >
+        一覧を更新
+      </button>
+      {error && <p role="alert">{error}</p>}
+      {!loaded && <p>読み込み中…</p>}
+      {Object.entries(taskLabels).map(([status, label]) => (
+        <section key={status} aria-label={label}>
+          <h2>{label}</h2>
+          {loaded && !tasks.some((task) => task.status === status) && <p>タスクはありません</p>}
+          {tasks
+            .filter((task) => task.status === status)
+            .map((task) => (
+              <article key={task.id} aria-label={task.name}>
+                <h3>{task.name}</h3>
+                <p>{task.memo}</p>
+                <p>
+                  報酬: {task.reward}円 / 期限: {new Date(task.deadline).toLocaleString()}
+                </p>
+                {role === "child" && task.childId === childId && <p>あなたの担当</p>}
+                {role === "parent" ? (
+                  <>
+                    {status === "WAIT_REVIEW" && (
+                      <button disabled={busy} onClick={() => mutate(task, "DONE")}>
+                        承認
+                      </button>
+                    )}
+                    <button disabled={busy} onClick={() => setEditing(task.id)}>
+                      編集
+                    </button>
+                    <button disabled={busy} onClick={() => mutate(task)}>
+                      削除
+                    </button>
+                    {editing === task.id && (
+                      <>
+                        <TaskEditor task={task} save={(data) => save(data, task)} />
+                        <button onClick={() => setEditing(null)}>キャンセル</button>
+                      </>
+                    )}
+                  </>
+                ) : (
+                  <>
+                    {status === "TODO" && task.childId === null && (
+                      <button disabled={busy} onClick={() => mutate(task, "IN_PROGRESS")}>
+                        はじめる
+                      </button>
+                    )}
+                    {status === "IN_PROGRESS" && task.childId === childId && (
+                      <button disabled={busy} onClick={() => mutate(task, "WAIT_REVIEW")}>
+                        できた!
+                      </button>
+                    )}
+                    {status === "WAIT_REVIEW" && <button disabled>まってね</button>}
+                  </>
+                )}
+              </article>
+            ))}
+        </section>
+      ))}
+    </>
+  );
+}
+
 function Top({ role }: { role: Role }) {
   const navigate = useNavigate();
   const { childId } = useParams();
   return (
     <>
       <h1>{role === "parent" ? "親のトップ" : "子供のトップ"}</h1>
-      <p>タスク機能は準備中です。</p>
+      <TaskBoard role={role} childId={childId} />
       {role === "parent" && <Link to="/children">子供のログインURL・追加</Link>}
       <button
         onClick={() => {

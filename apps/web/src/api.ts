@@ -17,11 +17,11 @@ export class ApiError extends Error {
 }
 export async function api<T>(
   path: string,
-  options: { body?: unknown; role?: Role } = {},
+  options: { body?: unknown; role?: Role; method?: "GET" | "POST" | "PATCH" | "DELETE" } = {},
 ): Promise<T> {
   const token = options.role ? tokens.get(options.role) : null;
   const response = await fetch(`/api${path}`, {
-    method: options.body === undefined ? "GET" : "POST",
+    method: options.method ?? (options.body === undefined ? "GET" : "POST"),
     headers: {
       ...(options.body === undefined ? {} : { "Content-Type": "application/json" }),
       ...(token ? { Authorization: `Bearer ${token}` } : {}),
