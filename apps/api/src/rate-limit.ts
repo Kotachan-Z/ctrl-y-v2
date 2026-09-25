@@ -6,7 +6,7 @@ export const FAILURE_LIMITER_MAX_ENTRIES = 10_000;
 // Per process only: multiple Functions instances do not share these counters.
 export function createFailureLimiter() {
   const entries = new Map<string, { failures: number; inFlight: number; expiresAt: number }>();
-  // Insertion order tracks when entries became idle; active entries cannot be evicted.
+  // Insertion order tracks when entries became idle; eviction also checks lockout expiry.
   const idle = new Set<string>();
   const duration = 60_000;
   const reject = () => {
@@ -17,15 +17,19 @@ export function createFailureLimiter() {
     let entry = entries.get(key);
     if (!entry) {
       if (entries.size >= FAILURE_LIMITER_MAX_ENTRIES) {
-        const oldest = idle.values().next();
-        if (oldest.done) return reject();
-        idle.delete(oldest.value);
-        entries.delete(oldest.value);
+        for (const candidate of idle) {
+          const idleEntry = entries.get(candidate)!;
+          if (idleEntry.failures >= 5 && idleEntry.expiresAt > now) continue;
+          idle.delete(candidate);
+          entries.delete(candidate);
+          break;
+        }
+        if (entries.size >= FAILURE_LIMITER_MAX_ENTRIES) return reject();
       }
       entry = { failures: 0, inFlight: 0, expiresAt: now + duration };
       entries.set(key, entry);
     }
-    // Expire on access, with constant-time capacity eviction instead of full scans.
+    // Expire on access; capacity eviction skips idle entries with active lockouts.
     if (entry.expiresAt <= now) {
       entry.failures = 0;
       entry.expiresAt = now + duration;
