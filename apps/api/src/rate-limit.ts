@@ -1,32 +1,58 @@
 import { HTTPException } from "hono/http-exception";
 
+// Bound attacker-controlled identifiers while allowing normal per-process traffic.
+export const FAILURE_LIMITER_MAX_ENTRIES = 10_000;
+
 // Per process only: multiple Functions instances do not share these counters.
 export function createFailureLimiter() {
-  const entries = new Map<string, { failures: number; expiresAt: number }>();
+  const entries = new Map<string, { failures: number; inFlight: number; expiresAt: number }>();
+  // Insertion order tracks when entries became idle; active entries cannot be evicted.
+  const idle = new Set<string>();
   const duration = 60_000;
-  return async function limit<T extends Response>(key: string, attempt: () => Promise<T>) {
-    const now = Date.now();
-    // Remove expired identifiers so inactive accounts do not accumulate forever.
-    for (const [id, entry] of entries) {
-      if (entry.expiresAt <= now) entries.delete(id);
-    }
-    const entry = entries.get(key);
-    if (entry && entry.failures >= 5) {
-      throw new HTTPException(429, { message: "試行回数が多すぎます。60秒後に再試行してください" });
-    }
-    const response = await attempt();
-    if (response.ok) entries.delete(key);
-    else if (response.status === 401 || response.status === 409) {
-      const finishedAt = Date.now();
-      const current = entries.get(key);
-      const next =
-        current && current.expiresAt > finishedAt
-          ? current
-          : { failures: 0, expiresAt: finishedAt + duration };
-      next.failures += 1;
-      if (next.failures === 5) next.expiresAt = finishedAt + duration;
-      entries.set(key, next);
-    }
-    return response;
+  const reject = () => {
+    throw new HTTPException(429, { message: "試行回数が多すぎます。60秒後に再試行してください" });
   };
+  const limit = async <T extends Response>(key: string, attempt: () => Promise<T>) => {
+    const now = Date.now();
+    let entry = entries.get(key);
+    if (!entry) {
+      if (entries.size >= FAILURE_LIMITER_MAX_ENTRIES) {
+        const oldest = idle.values().next();
+        if (oldest.done) return reject();
+        idle.delete(oldest.value);
+        entries.delete(oldest.value);
+      }
+      entry = { failures: 0, inFlight: 0, expiresAt: now + duration };
+      entries.set(key, entry);
+    }
+    // Expire on access, with constant-time capacity eviction instead of full scans.
+    if (entry.expiresAt <= now) {
+      entry.failures = 0;
+      entry.expiresAt = now + duration;
+    }
+    if (entry.failures + entry.inFlight >= 5) return reject();
+    idle.delete(key);
+    entry.inFlight += 1;
+    try {
+      const response = await attempt();
+      if (response.ok) entry.failures = 0;
+      else if (response.status === 401 || response.status === 409) {
+        const finishedAt = Date.now();
+        if (entry.failures === 0 || entry.expiresAt <= finishedAt) {
+          entry.failures = 0;
+          entry.expiresAt = finishedAt + duration;
+        }
+        entry.failures += 1;
+        if (entry.failures === 5) entry.expiresAt = finishedAt + duration;
+      }
+      return response;
+    } finally {
+      entry.inFlight -= 1;
+      if (entry.inFlight === 0) {
+        if (entry.failures === 0) entries.delete(key);
+        else idle.add(key);
+      }
+    }
+  };
+  return Object.assign(limit, { stateSizeForTesting: () => entries.size });
 }
