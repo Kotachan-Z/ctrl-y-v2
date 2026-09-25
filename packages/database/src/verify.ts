@@ -1,18 +1,28 @@
 import assert from "node:assert/strict";
 
+import { compare } from "bcryptjs";
 import { eq } from "drizzle-orm";
 
-import { client, db } from "./local";
-import { users } from "./schema";
+import { createLocalDatabase } from "./local";
+import { parents, children, tasks } from "./schema";
+const { client, db } = createLocalDatabase();
 try {
-  const rows = await db
+  const [row] = await db
     .select()
-    .from(users)
-    .where(eq(users.id, "00000000-0000-4000-8000-000000000001"));
-  assert.equal(rows.length, 1);
-  assert.equal(rows[0]?.name, "Local scaffold user");
-  assert.ok(rows[0]?.createdAt instanceof Date);
-  console.log("PGLite migration / seed / Drizzle query: OK");
+    .from(parents)
+    .innerJoin(children, eq(children.parentId, parents.id))
+    .innerJoin(tasks, eq(tasks.childId, children.id))
+    .where(eq(parents.id, "00000000-0000-4000-8000-000000000001"));
+  assert.ok(row);
+  assert.equal(row.parents.email, "parent@example.test");
+  assert.ok(await compare("local-password", row.parents.passwordHash));
+  assert.ok(await compare("ひみつのことば", row.parents.keyword));
+  assert.equal(row.children.name, "サンプルの子供");
+  assert.equal(row.tasks.name, "お片付け");
+  assert.equal(row.tasks.reward, 100);
+  assert.equal(row.tasks.status, "TODO");
+  assert.ok(row.tasks.createdAt instanceof Date);
+  console.log("PGLite migration / parent + child + task seed / Drizzle query: OK");
 } finally {
   await client.close();
 }

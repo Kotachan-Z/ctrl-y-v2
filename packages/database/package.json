@@ -4,7 +4,8 @@
   "private": true,
   "type": "module",
   "exports": {
-    ".": "./src/schema.ts"
+    ".": "./src/schema.ts",
+    "./local": "./src/local.ts"
   },
   "scripts": {
     "type-check": "tsc --noEmit",
@@ -15,6 +16,7 @@
   },
   "dependencies": {
     "@electric-sql/pglite": "0.4.4",
+    "bcryptjs": "3.0.3",
     "drizzle-orm": "0.45.2"
   },
   "devDependencies": {

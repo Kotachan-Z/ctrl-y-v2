@@ -12,7 +12,7 @@
     "dev": {
       "cache": false,
       "persistent": true,
-      "env": ["API_PORT"]
+      "env": ["API_PORT", "JWT_SECRET", "PGLITE_PATH"]
     },
     "test": {
       "dependsOn": ["^build"],

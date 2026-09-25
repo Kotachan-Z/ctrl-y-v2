@@ -19,3 +19,43 @@ h1 {
 p {
   line-height: 1.8;
 }
+form,
+label {
+  display: grid;
+  gap: 0.6rem;
+}
+form {
+  margin: 1.5rem 0;
+  gap: 1rem;
+}
+input,
+button {
+  font: inherit;
+  padding: 0.7rem;
+  border: 1px solid #78968b;
+  border-radius: 0.4rem;
+}
+button {
+  cursor: pointer;
+  background: #173d36;
+  color: white;
+  margin: 0.6rem 0;
+}
+button:disabled {
+  opacity: 0.6;
+  cursor: wait;
+}
+a {
+  color: #165c85;
+  overflow-wrap: anywhere;
+}
+section {
+  border-bottom: 1px solid #ccdcd4;
+  padding: 1rem 0;
+}
+section button {
+  display: block;
+}
+[role="alert"] {
+  color: #a32121;
+}
