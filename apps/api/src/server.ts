@@ -5,7 +5,7 @@ import { HTTPException } from "hono/http-exception";
 
 import { authenticate, familyId, isUuid, issueToken, parentOnly, type AuthEnv } from "./auth.js";
 import { createFailureLimiter } from "./rate-limit.js";
-import type { AuthRepository } from "./repository.js";
+import type { AuthRepository, TaskFields, TaskStatus } from "./repository.js";
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === "object" && !Array.isArray(value);
@@ -50,6 +50,64 @@ function childName(value: unknown) {
   )
     throw new HTTPException(400, { message: "名前は1〜50文字にしてください" });
   return value.trim();
+}
+function taskStatus(value: unknown): value is TaskStatus {
+  return value === "TODO" || value === "IN_PROGRESS" || value === "WAIT_REVIEW" || value === "DONE";
+}
+function taskFields(data: Record<string, unknown>, partial = false): Partial<TaskFields> {
+  const fail = () => {
+    throw new HTTPException(400, { message: "タスクの入力を確認してください" });
+  };
+  if (
+    !Object.keys(data).length ||
+    Object.keys(data).some((key) => !["name", "memo", "reward", "deadline"].includes(key))
+  )
+    fail();
+  const result: Partial<TaskFields> = {};
+  if (!partial || "name" in data) {
+    if (
+      typeof data.name !== "string" ||
+      !data.name.trim() ||
+      data.name.includes("\u0000") ||
+      Array.from(data.name.trim()).length > 100
+    )
+      return fail();
+    result.name = data.name.trim();
+  }
+  if ("memo" in data) {
+    if (
+      data.memo !== null &&
+      (typeof data.memo !== "string" ||
+        data.memo.includes("\u0000") ||
+        Array.from(data.memo).length > 2000)
+    )
+      return fail();
+    result.memo = data.memo;
+  }
+  if (!partial || "reward" in data) {
+    if (
+      typeof data.reward !== "number" ||
+      !Number.isInteger(data.reward) ||
+      data.reward < 0 ||
+      data.reward > 2147483647
+    )
+      return fail();
+    result.reward = data.reward;
+  }
+  if (!partial || "deadline" in data) {
+    if (
+      typeof data.deadline !== "string" ||
+      !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,3})?(?:Z|[+-]\d{2}:\d{2})$/.test(
+        data.deadline,
+      ) ||
+      !Number.isFinite(Date.parse(data.deadline))
+    )
+      return fail();
+    const date = data.deadline.slice(0, 10);
+    if (new Date(date).toISOString().slice(0, 10) !== date) return fail();
+    result.deadline = new Date(data.deadline);
+  }
+  return result;
 }
 export function createApp(options: {
   repository: AuthRepository | (() => AuthRepository);
@@ -139,6 +197,95 @@ export function createApp(options: {
         child: { id, name: record.child.name },
       });
     });
+  });
+  app.post("/api/tasks", auth, parentOnly, async (c) => {
+    const fields = taskFields(await body(c.req.raw));
+    if (fields.name === undefined || fields.reward === undefined || fields.deadline === undefined)
+      throw new HTTPException(400, { message: "必須項目を入力してください" });
+    return c.json(
+      {
+        task: await repo().createTask(familyId(c.get("identity")), {
+          ...fields,
+          name: fields.name,
+          reward: fields.reward,
+          deadline: fields.deadline,
+        }),
+      },
+      201,
+    );
+  });
+  app.get("/api/tasks", auth, async (c) => {
+    const status = c.req.query("status");
+    const childId = c.req.query("childId");
+    if (status !== undefined && !taskStatus(status))
+      throw new HTTPException(400, { message: "ステータスが不正です" });
+    if (childId !== undefined && childId !== "null" && !isUuid(childId))
+      throw new HTTPException(400, { message: "担当者が不正です" });
+    return c.json({
+      tasks: await repo().listTasks(
+        familyId(c.get("identity")),
+        status,
+        childId === "null" ? null : childId,
+      ),
+    });
+  });
+  app.use("/api/tasks/:taskId/*", auth);
+  app.use("/api/tasks/:taskId", auth);
+  app.use("/api/tasks/:taskId/*", async (c, next) => {
+    if (!isUuid(c.req.param("taskId")))
+      throw new HTTPException(400, { message: "タスクIDが不正です" });
+    await next();
+  });
+  const ownedTask = async (parentId: string, id: string) => {
+    if (!isUuid(id)) throw new HTTPException(400, { message: "タスクIDが不正です" });
+    const task = await repo().taskById(parentId, id);
+    if (!task) throw new HTTPException(404, { message: "タスクが見つかりません" });
+    return task;
+  };
+  app.get("/api/tasks/:taskId", async (c) =>
+    c.json({ task: await ownedTask(familyId(c.get("identity")), c.req.param("taskId")) }),
+  );
+  app.patch("/api/tasks/:taskId", parentOnly, async (c) => {
+    const parentId = familyId(c.get("identity"));
+    const id = c.req.param("taskId");
+    await ownedTask(parentId, id);
+    const task = await repo().editTask(parentId, id, taskFields(await body(c.req.raw), true));
+    if (!task) throw new HTTPException(404, { message: "タスクが見つかりません" });
+    return c.json({ task });
+  });
+  app.delete("/api/tasks/:taskId", parentOnly, async (c) => {
+    const parentId = familyId(c.get("identity"));
+    const id = c.req.param("taskId");
+    await ownedTask(parentId, id);
+    if (!(await repo().deleteTask(parentId, id)))
+      throw new HTTPException(404, { message: "タスクが見つかりません" });
+    return c.json({ success: true });
+  });
+  app.patch("/api/tasks/:taskId/status", async (c) => {
+    const identity = c.get("identity");
+    const parentId = familyId(identity);
+    const id = c.req.param("taskId");
+    await ownedTask(parentId, id);
+    const data = await body(c.req.raw);
+    if (
+      Object.keys(data).some((key) => key !== "status") ||
+      !taskStatus(data.status) ||
+      data.status === "TODO"
+    )
+      throw new HTTPException(400, { message: "ステータス変更が不正です" });
+    if ((data.status === "DONE") !== (identity.role === "parent"))
+      throw new HTTPException(403, { message: "この操作は許可されていません" });
+    const task = await repo().transitionTask(
+      parentId,
+      id,
+      data.status,
+      identity.role === "child" ? identity.id : undefined,
+    );
+    if (!task)
+      throw new HTTPException(409, {
+        message: "タスクの状態または担当者が変わっています。一覧を更新してください",
+      });
+    return c.json({ task });
   });
   // Used by guards to validate expiration, identity, and family membership server-side.
   app.get("/api/session", auth, (c) => c.json({ identity: c.get("identity") }));
