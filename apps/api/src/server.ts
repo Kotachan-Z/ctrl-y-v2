@@ -230,7 +230,6 @@ export function createApp(options: {
     });
   });
   app.use("/api/tasks/:taskId/*", auth);
-  app.use("/api/tasks/:taskId", auth);
   app.use("/api/tasks/:taskId/*", async (c, next) => {
     if (!isUuid(c.req.param("taskId")))
       throw new HTTPException(400, { message: "タスクIDが不正です" });

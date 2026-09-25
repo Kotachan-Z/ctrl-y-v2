@@ -1,5 +1,6 @@
 import { children, parents, tasks } from "@ctrl-y/database";
-import { afterAll, beforeAll, expect, test } from "vitest";
+import { eq } from "drizzle-orm";
+import { afterAll, beforeAll, expect, test, vi } from "vitest";
 
 import { issueToken } from "../src/auth.js";
 import { secret, testApp } from "./helpers.js";
@@ -184,4 +185,60 @@ test("input validation rejects invalid fields and protected fields", async () =>
   ).toBe(400);
   const unassigned = (await (await request("?status=TODO&childId=null")).json()).tasks;
   expect(unassigned.every((t: { childId: string | null }) => t.childId === null)).toBe(true);
+});
+
+test("task routes authenticate exactly once per request", async () => {
+  const task = await create();
+  const parentLookup = vi.spyOn(fixture.repository, "parentById");
+  const childLookup = vi.spyOn(fixture.repository, "childById");
+  try {
+    for (const [path, method, token, body, lookup] of [
+      [`/${task.id}`, "GET", parent, undefined, parentLookup],
+      [`/${task.id}`, "PATCH", parent, { name: "Edited" }, parentLookup],
+      [`/${task.id}`, "GET", child, undefined, childLookup],
+      [`/${task.id}/status`, "PATCH", child, { status: "IN_PROGRESS" }, childLookup],
+      [`/${task.id}`, "DELETE", parent, undefined, parentLookup],
+    ] as const) {
+      lookup.mockClear();
+      expect((await request(path, method, token, body)).status).toBe(200);
+      expect(lookup, `${method} ${path}`).toHaveBeenCalledTimes(1);
+    }
+  } finally {
+    parentLookup.mockRestore();
+    childLookup.mockRestore();
+  }
+});
+
+test("deadline milliseconds survive Drizzle and API creation and edits", async () => {
+  const initial = "2027-01-01T18:00:00.123Z";
+  const updated = "2027-01-02T18:00:00.456Z";
+  const [inserted] = await fixture.db
+    .insert(tasks)
+    .values({ ...fields, parentId, deadline: new Date(initial) })
+    .returning();
+  expect(inserted.deadline.toISOString()).toBe(initial);
+  const created = await request("", "POST", parent, { ...fields, deadline: initial });
+  expect(created.status).toBe(201);
+  const apiTask = (await created.json()).task;
+  expect(apiTask.deadline).toBe(initial);
+  for (const id of [inserted.id, apiTask.id]) {
+    const checkStored = async (expected: string) => {
+      const [stored] = await fixture.db.select().from(tasks).where(eq(tasks.id, id));
+      expect(stored.deadline.toISOString()).toBe(expected);
+      const fetched = await request(`/${id}`);
+      expect(fetched.status).toBe(200);
+      expect((await fetched.json()).task.deadline).toBe(expected);
+    };
+    await checkStored(initial);
+    for (const [patch, expected] of [
+      [{ name: "Name only" }, initial],
+      [{ deadline: updated }, updated],
+      [{ memo: "Memo only" }, updated],
+    ] as const) {
+      const edited = await request(`/${id}`, "PATCH", parent, patch);
+      expect(edited.status).toBe(200);
+      expect((await edited.json()).task.deadline).toBe(expected);
+      await checkStored(expected);
+    }
+  }
 });
