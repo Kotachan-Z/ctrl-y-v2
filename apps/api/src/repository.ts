@@ -1,14 +1,75 @@
-import { children, parents, tasks } from "@ctrl-y/database";
-import { and, eq, isNull } from "drizzle-orm";
+import { children, parents, payroll, tasks } from "@ctrl-y/database";
+import { and, count, eq, gte, isNull, lt, sql } from "drizzle-orm";
 import type { PgliteDatabase } from "drizzle-orm/pglite";
+
+export type PushSubscription = NonNullable<typeof parents.$inferSelect.pushSubscription>;
 
 export type TaskFields = Pick<typeof tasks.$inferInsert, "name" | "memo" | "reward" | "deadline">;
 export type TaskStatus = typeof tasks.$inferSelect.status;
+
+type Transaction = Parameters<Parameters<PgliteDatabase["transaction"]>[0]>[0];
+
+async function recalculatePayroll(tx: Transaction, childId: string, month: string) {
+  const start = new Date(`${month}T00:00:00.000Z`);
+  if (!/^(?!0000)\d{4}-(?:0[1-9]|1[0-2])-01$/.test(month) || !Number.isFinite(start.getTime()))
+    throw new Error("Invalid payroll month");
+  const end = new Date(start);
+  end.setUTCMonth(end.getUTCMonth() + 1);
+  // Serialize aggregates even when this child's payroll row does not exist yet.
+  await tx.select().from(children).where(eq(children.id, childId)).for("update");
+  const [totals] = await tx
+    .select({
+      completedTaskCount: count(),
+      totalReward: sql<number>`coalesce(sum(${tasks.reward}), 0)`.mapWith(Number),
+    })
+    .from(tasks)
+    .where(
+      and(
+        eq(tasks.childId, childId),
+        eq(tasks.status, "DONE"),
+        gte(tasks.completedAt, start),
+        lt(tasks.completedAt, end),
+      ),
+    );
+  return (
+    await tx
+      .insert(payroll)
+      .values({ childId, month, ...totals })
+      .onConflictDoUpdate({ target: [payroll.childId, payroll.month], set: totals })
+      .returning()
+  )[0];
+}
+
+async function recalculateTaskPayroll(
+  tx: Transaction,
+  task: typeof tasks.$inferSelect | undefined,
+) {
+  if (task?.status === "DONE" && task.childId && task.completedAt)
+    await recalculatePayroll(tx, task.childId, `${task.completedAt.toISOString().slice(0, 7)}-01`);
+}
 
 // Routes depend on this repository, not a connection driver. A Postgres adapter
 // can replace this implementation without changing authentication or routes.
 export function createRepository(db: PgliteDatabase) {
   return {
+    async recalculatePayroll(childId: string, month: string) {
+      return db.transaction((tx) => recalculatePayroll(tx, childId, month));
+    },
+    async listPayroll(parentId: string, month?: string, childId?: string) {
+      const rows = await db
+        .select({ payroll })
+        .from(payroll)
+        .innerJoin(children, eq(payroll.childId, children.id))
+        .where(
+          and(
+            eq(children.parentId, parentId),
+            month ? eq(payroll.month, month) : undefined,
+            childId ? eq(payroll.childId, childId) : undefined,
+          ),
+        )
+        .orderBy(payroll.month, payroll.childId);
+      return rows.map((row) => row.payroll);
+    },
     async createTask(parentId: string, fields: TaskFields) {
       return (
         await db
@@ -43,21 +104,25 @@ export function createRepository(db: PgliteDatabase) {
       ).at(0);
     },
     async editTask(parentId: string, id: string, fields: Partial<TaskFields>) {
-      return (
-        await db
+      return db.transaction(async (tx) => {
+        const [task] = await tx
           .update(tasks)
           .set(fields)
           .where(and(eq(tasks.parentId, parentId), eq(tasks.id, id)))
-          .returning()
-      ).at(0);
+          .returning();
+        if (fields.reward !== undefined) await recalculateTaskPayroll(tx, task);
+        return task;
+      });
     },
     async deleteTask(parentId: string, id: string) {
-      return (
-        await db
+      return db.transaction(async (tx) => {
+        const [task] = await tx
           .delete(tasks)
           .where(and(eq(tasks.parentId, parentId), eq(tasks.id, id)))
-          .returning({ id: tasks.id })
-      ).at(0);
+          .returning();
+        await recalculateTaskPayroll(tx, task);
+        return task ? { id: task.id } : undefined;
+      });
     },
     async transitionTask(
       parentId: string,
@@ -70,15 +135,22 @@ export function createRepository(db: PgliteDatabase) {
         status === "IN_PROGRESS"
           ? "TODO"
           : status === "WAIT_REVIEW"
-            ? "IN_PROGRESS"
+            ? childId
+              ? "IN_PROGRESS"
+              : "DONE"
             : "WAIT_REVIEW";
-      return (
-        await db
+      return db.transaction(async (tx) => {
+        const [oldTask] = await tx
+          .select()
+          .from(tasks)
+          .where(and(eq(tasks.parentId, parentId), eq(tasks.id, id)))
+          .for("update");
+        const [task] = await tx
           .update(tasks)
           .set({
             status,
             ...(status === "IN_PROGRESS" ? { childId } : {}),
-            ...(status === "DONE" ? { completedAt: new Date() } : {}),
+            completedAt: status === "DONE" ? new Date() : null,
           })
           .where(
             and(
@@ -92,8 +164,13 @@ export function createRepository(db: PgliteDatabase) {
                   : undefined,
             ),
           )
-          .returning()
-      ).at(0);
+          .returning();
+        if (task) {
+          await recalculateTaskPayroll(tx, oldTask);
+          await recalculateTaskPayroll(tx, task);
+        }
+        return task;
+      });
     },
     async register(email: string, passwordHash: string) {
       const result = await db
@@ -102,6 +179,19 @@ export function createRepository(db: PgliteDatabase) {
         .onConflictDoNothing({ target: parents.email })
         .returning();
       return result.at(0);
+    },
+    async setPushSubscription(parentId: string, subscription: PushSubscription | null) {
+      await db
+        .update(parents)
+        .set({ pushSubscription: subscription })
+        .where(eq(parents.id, parentId));
+    },
+    async clearPushSubscriptionIfUnchanged(parentId: string, subscription: PushSubscription) {
+      // A delayed provider rejection must not erase a newer browser subscription.
+      await db
+        .update(parents)
+        .set({ pushSubscription: null })
+        .where(and(eq(parents.id, parentId), eq(parents.pushSubscription, subscription)));
     },
     async parentByEmail(email: string) {
       return (await db.select().from(parents).where(eq(parents.email, email))).at(0);

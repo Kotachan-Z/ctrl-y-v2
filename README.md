@@ -3,7 +3,7 @@
 親子向けタスク報酬管理アプリ「Ctrl-Y（ご褒美ポケット）」の技術スタック刷新版。
 元プロジェクト: https://github.com/ctrl-Yc/Ctrl-Y （機能仕様の参照のみ。コード移植なし）
 
-Phase 2a: 親・子供の認証とデータモデルを実装しています。タスク管理・給与集計・通知・PWAは後続フェーズです。
+Phase 2b: 親・子供の認証とデータモデルに加え、タスク管理（CRUD・ステータス遷移、PR #2）まで main にマージ済みです。Phase 2cの給与集計も実装済みです。Phase 2dの通知も実装済みです。Phase 2eのPWAも実装済みです。
 検証状況と環境制約は [Phase 2a 検証記録](docs/phase-2a-verification.md) を参照してください。
 
 ## 構成
@@ -14,12 +14,20 @@ apps/api/          Hono、Bun 開発サーバー、Firebase Functions 第2世代
 packages/database/ Drizzle schema / migrations / PGLite / 開発用 seed
 e2e/              Playwright ブラウザ・API スモークテスト
 .mise-tasks/       setup / dev / check / format
-.github/workflows/ lint・型検査・ビルド・DB検証・Playwright
+.github/workflows/ CI・CodeQL・手動 Firebase デプロイ
+.github/dependabot.yml npm / GitHub Actions の週次依存更新
 ```
 
 Bun workspaces + Turbo でタスクを実行します。oxlint（型情報込み）/ oxfmt と
 lefthook を使用し、モノレポ向けの構成を小規模プロジェクト向けに適合しています。
 Terraform、Docker、Next.js は使用しません。
+
+### CI
+
+- `ci.yml`: lint・整形・型検査・テスト・ビルド・DB検証・Playwrightを実行。両ジョブで `bun.lock` をキーにBunのダウンロードキャッシュを共有し、frozen installを行います。ジョブの権限は `contents: read` のみです。
+- `codeql.yml`: mainへのpush・PRと週次スケジュールでJavaScript/TypeScriptを解析します。解析ジョブにのみ `security-events: write`、`contents: read`、`actions: read` を付与します。
+- `dependabot.yml`: npm（ルート・各workspace）とGitHub Actionsの更新PRを毎週作成します。
+- `deploy.yml`: Actionsの「Firebase deploy」から手動実行のみ。リポジトリSecretsに `FIREBASE_SERVICE_ACCOUNT`（デプロイ権限を持つサービスアカウントのJSON）と `FIREBASE_PROJECT_ID` を設定してください。未設定時は停止します。Node.js 22・Bunで依存をインストールし、`firebase.json` のpredeployで `bun run --filter @ctrl-y/web build` と `bun run --filter @ctrl-y/api build` を実行してHosting/Functionsをデプロイします。プロジェクトIDは `--project` で指定し、一時的な認証ファイルは終了時に削除します。本番プロジェクト・JWT Secret・本番DB接続の準備を済ませてから実行してください。
 
 ## セットアップ
 
@@ -88,7 +96,7 @@ seed は `parent@example.test` / `local-password`、子供のあいことばは 
 - `server.ts` の Hono アプリを Bun の `entry.ts` と Firebase の `functions.ts` で共有。
 - Functions は `@hono/node-server` の `getRequestListener` と `onRequest` で統合し、BunでNode.js ESMへbundleします。`dist/package.json` はFirebase用の独立した依存宣言で、workspace参照を含みません。
 - `firebase.json` の predeploy でそれぞれの成果物をビルド。
-- `.firebaserc` の `demo-ctrl-y-v2` は仮 ID。実際のプロジェクト ID へ置き換えてからデプロイする前提です。
+- `.firebaserc` の `demo-ctrl-y-v2` は仮 ID。手動デプロイworkflowではSecretsの実際のプロジェクトIDを `--project` で指定して上書きします。
 
 ランタイムは [Firebase の Node.js ランタイム設定](https://firebase.google.com/docs/functions/manage-functions#set_nodejs_version) に準拠。
 この作業では Firebase ログイン・デプロイを行いません。
@@ -112,5 +120,35 @@ seed は `parent@example.test` / `local-password`、子供のあいことばは 
 - 本番DB adapterは未接続です。Functionsの認証APIは接続実装まで利用できません。
   `createApp` にrepositoryを注入する設計で、ローカルPGLiteを本番で誤使用しません。
 - タスクの状態enumと所有者制約までを定義しています。状態遷移の操作・逆戻り防止は
-  Phase 2bのタスク更新処理で実装します。給与のmonthは対象月1日のDATEです。
+  Phase 2bのタスク更新処理で実装済みです。給与のmonthは対象月1日のDATEです。
 - Playwrightは `.pglite/e2e` にmigrationを適用し、テスト専用JWT_SECRETで起動します。
+
+## Phase 2c 給与集計
+
+- タスクの報酬は0〜1,000,000円の整数です。APIとDBのCHECK制約で範囲を検証します。
+
+- DONEタスクの件数・報酬合計を、子供ごとに`completedAt`のUTC暦月で再集計します。monthは`YYYY-MM-01`。
+- 完了承認・親によるDONE → WAIT_REVIEWへの差し戻し・DONEの報酬編集・削除で更新。同じ月の再集計は冪等で、対象がなくなると0件・0円を保持します。
+- `GET /api/payroll`: 親のみ、自分の子供全員の給与。`month`・`childId`で絞り込み可能。
+- `GET /api/children/:childId/payroll`: 自分の子供の親、または子供本人のみ。月の昇順で履歴を返します。
+- 両APIのレスポンスは`{ payroll: [...] }`。各行は給与テーブルの項目を返します。
+
+## Phase 2d 通知
+
+- `GET /api/push/public-key`: 認証不要、`{ publicKey }`を返します。
+- `PUT /api/parents/push-subscription`: 親のみ、ブラウザの`{ endpoint, keys: { p256dh, auth } }`を保存・上書きします（親ごとに1件）。
+- `DELETE /api/parents/push-subscription`: 親のみ、自分の購読を解除します。
+- 子供のIN_PROGRESS → WAIT_REVIEWへの完了報告で親へ通知。親の差し戻しでは送信しません。
+- 送信はレスポンスを待たせないbest-effort。404/410の無効な購読は自動削除し、その他の失敗はログのみ。永続キュー・再送保証はありません。
+- `VAPID_PUBLIC_KEY`・`VAPID_PRIVATE_KEY`・`VAPID_SUBJECT`（`mailto:`または`https:`の連絡先URI）が必須。不足・形式不正はアプリ初期化時にエラーになります。
+  `npx web-push generate-vapid-keys`で鍵を生成し、`apps/api/.env.local`に設定してください。`.env.example`の値は置換必須のプレースホルダーです。Firebaseでは同名Secretを設定します。
+- 購読UI・PWA・service workerによる表示はPhase 2eで実装済みです。Functionsの応答後の実行継続も保証されないため、確実な配信には今後永続キューが必要です。
+
+## Phase 2e PWA
+
+- 手書きのmanifest・SVGアイコン（any / maskable）でホーム画面への追加に対応。テーマ色・iOS向け表示名も設定しています。
+- `/sw.js`を登録し、更新時は即時有効化して旧バージョンのキャッシュを削除します。
+- ページHTMLはnetwork-first、ビルド済み静的アセットはcache-first。訪問・読み込み済みの画面をオフラインでも開けます。キャッシュは静的コンテンツのみで、`/api/`は一切介入・保存しません。オフラインでタスク・給与データの取得や更新はできません。
+- 親の`/top`で通知を有効化・解除できます。許可後にVAPID公開鍵で購読しAPIへ保存、解除時はブラウザとAPI双方の購読を解除します。未対応・許可拒否は画面に表示します。
+- pushのタイトル・本文を通知表示し、クリックで既存ウィンドウを開くか`/`へ移動します。HTTPS（ローカルはlocalhost）が必要です。iOSの通知はホーム画面に追加した対応環境で利用します。
+- Playwrightでmanifest・service worker登録・親トップの通知操作を検証します。購読処理はブラウザAPIをモックし、外部pushサービスには接続しません。

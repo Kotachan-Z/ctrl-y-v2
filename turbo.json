@@ -12,7 +12,14 @@
     "dev": {
       "cache": false,
       "persistent": true,
-      "env": ["API_PORT", "JWT_SECRET", "PGLITE_PATH"]
+      "env": [
+        "API_PORT",
+        "JWT_SECRET",
+        "PGLITE_PATH",
+        "VAPID_PUBLIC_KEY",
+        "VAPID_PRIVATE_KEY",
+        "VAPID_SUBJECT"
+      ]
     },
     "test": {
       "dependsOn": ["^build"],

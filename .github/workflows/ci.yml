@@ -11,6 +11,8 @@ concurrency:
   cancel-in-progress: true
 jobs:
   lint-and-build:
+    permissions:
+      contents: read
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -18,6 +20,12 @@ jobs:
       - uses: oven-sh/setup-bun@v2
         with:
           bun-version: "1.3.14"
+      - uses: actions/cache@v4
+        with:
+          path: ~/.bun/install/cache
+          key: ${{ runner.os }}-${{ runner.arch }}-bun-1.3.14-${{ hashFiles('bun.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-${{ runner.arch }}-bun-1.3.14-
       - run: bun install --frozen-lockfile
       - run: bun --bun oxfmt --check
       - run: bun --bun oxlint
@@ -28,6 +36,8 @@ jobs:
       - run: bun run --filter @ctrl-y/database seed
       - run: bun run --filter @ctrl-y/database verify
   playwright:
+    permissions:
+      contents: read
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -35,6 +45,12 @@ jobs:
       - uses: oven-sh/setup-bun@v2
         with:
           bun-version: "1.3.14"
+      - uses: actions/cache@v4
+        with:
+          path: ~/.bun/install/cache
+          key: ${{ runner.os }}-${{ runner.arch }}-bun-1.3.14-${{ hashFiles('bun.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-${{ runner.arch }}-bun-1.3.14-
       - run: bun install --frozen-lockfile
       - run: bunx --no-install playwright install --with-deps chromium
       - run: bun run test:e2e

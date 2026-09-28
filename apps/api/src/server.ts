@@ -1,11 +1,59 @@
+import { BlockList, isIP } from "node:net";
+
 import { compare, hash } from "bcryptjs";
 import { Hono } from "hono";
 import { bodyLimit } from "hono/body-limit";
 import { HTTPException } from "hono/http-exception";
 
 import { authenticate, familyId, isUuid, issueToken, parentOnly, type AuthEnv } from "./auth.js";
+import { notifyReview, readVapidConfig, validateVapidConfig, type VapidConfig } from "./push.js";
 import { createFailureLimiter } from "./rate-limit.js";
 import type { AuthRepository, TaskFields, TaskStatus } from "./repository.js";
+
+const nonPublicAddresses = new BlockList();
+for (const [address, prefix] of [
+  ["0.0.0.0", 8],
+  ["10.0.0.0", 8],
+  ["100.64.0.0", 10],
+  ["127.0.0.0", 8],
+  ["169.254.0.0", 16],
+  ["172.16.0.0", 12],
+  ["192.0.0.0", 24],
+  ["192.0.2.0", 24],
+  ["192.88.99.0", 24],
+  ["192.168.0.0", 16],
+  ["198.18.0.0", 15],
+  ["198.51.100.0", 24],
+  ["203.0.113.0", 24],
+  ["224.0.0.0", 3],
+] as const)
+  nonPublicAddresses.addSubnet(address, prefix, "ipv4");
+const globalIpv6 = new BlockList();
+globalIpv6.addSubnet("2000::", 3, "ipv6");
+for (const [address, prefix] of [
+  ["2001::", 23], // Special-purpose protocols, including Teredo.
+  ["2001:db8::", 32],
+  ["2002::", 16], // 6to4 can embed a private IPv4 destination.
+  ["3fff::", 20],
+] as const)
+  nonPublicAddresses.addSubnet(address, prefix, "ipv6");
+function isPublicPushHost(url: URL): boolean {
+  // URL canonicalizes alternate IPv4 spellings and compressed IPv6 before this check.
+  // Defense in depth only: DNS rebinding to a private IP at send time is a separate,
+  // harder problem that this literal-address check does not solve.
+  const hostname = url.hostname.replace(/\.$/, "");
+  const address = hostname.replace(/^\[|\]$/g, "");
+  const version = isIP(address);
+  if (version === 4) return !nonPublicAddresses.check(address, "ipv4");
+  if (version === 6)
+    return globalIpv6.check(address, "ipv6") && !nonPublicAddresses.check(address, "ipv6");
+  return (
+    hostname.includes(".") &&
+    !["localhost", "local", "internal", "lan", "home.arpa"].some(
+      (suffix) => hostname === suffix || hostname.endsWith(`.${suffix}`),
+    )
+  );
+}
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === "object" && !Array.isArray(value);
@@ -89,7 +137,7 @@ function taskFields(data: Record<string, unknown>, partial = false): Partial<Tas
       typeof data.reward !== "number" ||
       !Number.isInteger(data.reward) ||
       data.reward < 0 ||
-      data.reward > 2147483647
+      data.reward > 1000000
     )
       return fail();
     result.reward = data.reward;
@@ -112,9 +160,11 @@ function taskFields(data: Record<string, unknown>, partial = false): Partial<Tas
 export function createApp(options: {
   repository: AuthRepository | (() => AuthRepository);
   jwtSecret: string;
+  vapid?: VapidConfig;
 }) {
   if (new TextEncoder().encode(options.jwtSecret).length < 32)
     throw new Error("JWT_SECRET must be at least 32 bytes");
+  const vapid = validateVapidConfig(options.vapid ?? readVapidConfig());
   const repo = () =>
     typeof options.repository === "function" ? options.repository() : options.repository;
   const auth = authenticate(options.jwtSecret, repo);
@@ -134,6 +184,40 @@ export function createApp(options: {
     await next();
   });
   app.get("/api/health", (c) => c.json({ status: "ok" }));
+  app.get("/api/push/public-key", (c) => c.json({ publicKey: vapid.publicKey }));
+  app.put("/api/parents/push-subscription", auth, parentOnly, async (c) => {
+    const data = await body(c.req.raw);
+    let endpoint: URL | undefined;
+    try {
+      if (typeof data.endpoint === "string") endpoint = new URL(data.endpoint);
+    } catch {
+      /* Invalid URLs are rejected below. */
+    }
+    if (
+      !endpoint ||
+      endpoint.protocol !== "https:" ||
+      !isPublicPushHost(endpoint) ||
+      endpoint.username ||
+      endpoint.password ||
+      typeof data.endpoint !== "string" ||
+      /\s/.test(data.endpoint) ||
+      !isRecord(data.keys) ||
+      typeof data.keys.p256dh !== "string" ||
+      !data.keys.p256dh.trim() ||
+      typeof data.keys.auth !== "string" ||
+      !data.keys.auth.trim()
+    )
+      throw new HTTPException(400, { message: "通知の購読情報を確認してください" });
+    await repo().setPushSubscription(familyId(c.get("identity")), {
+      endpoint: data.endpoint,
+      keys: { p256dh: data.keys.p256dh, auth: data.keys.auth },
+    });
+    return c.json({ success: true });
+  });
+  app.delete("/api/parents/push-subscription", auth, parentOnly, async (c) => {
+    await repo().setPushSubscription(familyId(c.get("identity")), null);
+    return c.json({ success: true });
+  });
   app.post("/api/parents", async (c) => {
     const { email, password } = credentials(await body(c.req.raw));
     return limit(`register:${email}`, async () => {
@@ -197,6 +281,29 @@ export function createApp(options: {
         child: { id, name: record.child.name },
       });
     });
+  });
+  const ownedPayrollChild = async (parentId: string, id: string) => {
+    if (!isUuid(id)) throw new HTTPException(400, { message: "子供IDが不正です" });
+    const record = await repo().childById(id);
+    if (!record || record.parent.id !== parentId)
+      throw new HTTPException(404, { message: "子供が見つかりません" });
+    return record.child;
+  };
+  app.get("/api/payroll", auth, parentOnly, async (c) => {
+    const parentId = familyId(c.get("identity"));
+    const month = c.req.query("month");
+    const childId = c.req.query("childId");
+    if (month !== undefined && !/^(?!0000)\d{4}-(?:0[1-9]|1[0-2])-01$/.test(month))
+      throw new HTTPException(400, { message: "対象月が不正です" });
+    if (childId !== undefined) await ownedPayrollChild(parentId, childId);
+    return c.json({ payroll: await repo().listPayroll(parentId, month, childId) });
+  });
+  app.get("/api/children/:childId/payroll", auth, async (c) => {
+    const identity = c.get("identity");
+    const child = await ownedPayrollChild(familyId(identity), c.req.param("childId"));
+    if (identity.role === "child" && identity.id.toLowerCase() !== child.id)
+      throw new HTTPException(403, { message: "この操作は許可されていません" });
+    return c.json({ payroll: await repo().listPayroll(familyId(identity), undefined, child.id) });
   });
   app.post("/api/tasks", auth, parentOnly, async (c) => {
     const fields = taskFields(await body(c.req.raw));
@@ -264,7 +371,7 @@ export function createApp(options: {
     const identity = c.get("identity");
     const parentId = familyId(identity);
     const id = c.req.param("taskId");
-    await ownedTask(parentId, id);
+    const current = await ownedTask(parentId, id);
     const data = await body(c.req.raw);
     if (
       Object.keys(data).some((key) => key !== "status") ||
@@ -272,7 +379,9 @@ export function createApp(options: {
       data.status === "TODO"
     )
       throw new HTTPException(400, { message: "ステータス変更が不正です" });
-    if ((data.status === "DONE") !== (identity.role === "parent"))
+    const reopening =
+      identity.role === "parent" && current.status === "DONE" && data.status === "WAIT_REVIEW";
+    if (!reopening && (data.status === "DONE") !== (identity.role === "parent"))
       throw new HTTPException(403, { message: "この操作は許可されていません" });
     const task = await repo().transitionTask(
       parentId,
@@ -284,6 +393,8 @@ export function createApp(options: {
       throw new HTTPException(409, {
         message: "タスクの状態または担当者が変わっています。一覧を更新してください",
       });
+    if (identity.role === "child" && task.status === "WAIT_REVIEW")
+      void notifyReview(repo(), vapid, parentId, task.name);
     return c.json({ task });
   });
   // Used by guards to validate expiration, identity, and family membership server-side.

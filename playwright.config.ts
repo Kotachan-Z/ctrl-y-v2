@@ -2,6 +2,8 @@ import { fileURLToPath } from "node:url";
 
 import { defineConfig } from "@playwright/test";
 
+import { vapidEnv } from "./apps/api/test/vapid-fixture.js";
+
 const apiPort = process.env.API_PORT ?? "3000";
 
 export default defineConfig({
@@ -20,6 +22,7 @@ export default defineConfig({
     {
       command: "bun run --filter @ctrl-y/database migration && bun run --filter @ctrl-y/api dev",
       env: {
+        ...vapidEnv,
         API_PORT: apiPort,
         JWT_SECRET: "e2e-only-secret-at-least-32-bytes-long",
         PGLITE_PATH: fileURLToPath(new URL("./.pglite/e2e", import.meta.url)),

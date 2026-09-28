@@ -7,7 +7,10 @@ import { createApp } from "./server.js";
 // Functions storage as the account database. Health remains available.
 let app: ReturnType<typeof createApp> | undefined;
 export const api = onRequest(
-  { region: "asia-northeast1", secrets: ["JWT_SECRET"] },
+  {
+    region: "asia-northeast1",
+    secrets: ["JWT_SECRET", "VAPID_PUBLIC_KEY", "VAPID_PRIVATE_KEY", "VAPID_SUBJECT"],
+  },
   (request, response) => {
     app ??= createApp({
       jwtSecret: process.env.JWT_SECRET ?? "",
