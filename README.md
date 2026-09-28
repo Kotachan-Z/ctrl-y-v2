@@ -10,11 +10,11 @@ Phase 2b: 親・子供の認証とデータモデルに加え、タスク管理�
 
 ```text
 apps/web/          React + Vite（TypeScript）
-apps/api/          Hono、Bun 開発サーバー、Firebase Functions 第2世代
+apps/api/          Hono、Bun 開発サーバー、Cloudflare Workers
 packages/database/ Drizzle schema / migrations / PGLite / 開発用 seed
 e2e/              Playwright ブラウザ・API スモークテスト
 .mise-tasks/       setup / dev / check / format
-.github/workflows/ CI・CodeQL・手動 Firebase デプロイ
+.github/workflows/ CI・CodeQL・手動 Cloudflare デプロイ
 .github/dependabot.yml npm / GitHub Actions の週次依存更新
 ```
 
@@ -27,7 +27,7 @@ Terraform、Docker、Next.js は使用しません。
 - `ci.yml`: lint・整形・型検査・テスト・ビルド・DB検証・Playwrightを実行。両ジョブで `bun.lock` をキーにBunのダウンロードキャッシュを共有し、frozen installを行います。ジョブの権限は `contents: read` のみです。
 - `codeql.yml`: mainへのpush・PRと週次スケジュールでJavaScript/TypeScriptを解析します。解析ジョブにのみ `security-events: write`、`contents: read`、`actions: read` を付与します。
 - `dependabot.yml`: npm（ルート・各workspace）とGitHub Actionsの更新PRを毎週作成します。
-- `deploy.yml`: Actionsの「Firebase deploy」から手動実行のみ。リポジトリSecretsに `FIREBASE_SERVICE_ACCOUNT`（デプロイ権限を持つサービスアカウントのJSON）と `FIREBASE_PROJECT_ID` を設定してください。未設定時は停止します。Node.js 22・Bunで依存をインストールし、`firebase.json` のpredeployで `bun run --filter @ctrl-y/web build` と `bun run --filter @ctrl-y/api build` を実行してHosting/Functionsをデプロイします。プロジェクトIDは `--project` で指定し、一時的な認証ファイルは終了時に削除します。本番プロジェクト・JWT Secret・本番DB接続の準備を済ませてから実行してください。
+- `deploy.yml`: Actionsの「Cloudflare deploy」から手動実行のみ（workflow_dispatch）。リポジトリSecretsの `CLOUDFLARE_API_TOKEN`・`CLOUDFLARE_ACCOUNT_ID` を事前確認し、未設定時は停止します。Bunのfrozen install → Webビルド → WranglerでWorker・静的アセットをデプロイします。権限は `contents: read` のみです。
 
 ## セットアップ
 
@@ -68,7 +68,7 @@ migration → seed → Turbo dev の順で起動します。開発データを�
 | `bun run oxlint`                              | 型情報を含む lint                                    |
 | `bun run oxfmt --check`                       | 整形検査                                             |
 | `bun run type-check`                          | ルート設定・E2E・全 workspace の型検査               |
-| `bun run build`                               | Web と Functions のビルド                            |
+| `bun run build`                               | Web ビルド・Workers bundle の dry-run 検証           |
 | `bun run test`                                | Hono の Vitest テスト                                |
 | `bun run test:e2e`                            | Vite / Hono を自動起動して Playwright スモークテスト |
 | `mise run check`                              | 整形・lint・型検査・単体テスト・ビルド               |
@@ -87,31 +87,19 @@ pre-commit は frozen install の dry-run → format → lint --fix → 型検�
 Phase 1 の migration は再生成済みのため、既存の疎通確認DBは `mise run dev` で初期化してください。
 seed は `parent@example.test` / `local-password`、子供のあいことばは `ひみつのことば` です（開発専用）。
 `PGLITE_PATH` でローカルDBの保存先を差し替えられます。APIとmigrationには同じ絶対パスを渡してください。
-本番 DB は Supabase PostgreSQL を予定しています。Workers 向けの接続コードは準備中で、資格情報の設定・本番 migration の適用は別途必要です。
+本番 DB は Supabase PostgreSQL に Hyperdrive + postgres.js + Drizzle で接続します。資格情報の設定・本番 migration の適用は別途必要です。
 
-## Cloudflare Workers (準備中)
+## Cloudflare Workers
 
-Firebase と並存する移行途中のデプロイ経路です。通常の `bun run dev` は引き続き Bun + PGLite を使用します。
+Worker・CIのbundle検証・手動デプロイworkflowは実装済みです。初回デプロイ前のアカウント固有設定は以下のとおりです。通常の `bun run dev` は Bun + PGLite を使用します。
 
 - ルートの `wrangler.toml`: Web の静的配信・SPA fallback、`/api`・`/api/*` の Worker 優先ルーティング、Hyperdrive binding。
 - `apps/api/src/worker.ts`: Hono を直接実行し、env の JWT/VAPID を既存の検証に渡します。アプリは再利用し、DB 接続はリクエスト単位で生成・通知完了後に終了します。
 - `packages/database/src/production.ts`: Hyperdrive + postgres.js + Drizzle の接続ファクトリ。
-- ルートで `bun run build` 後に `bun run dev:workers` / `bun run deploy`。Workers Paid を前提とし、bcryptjs cost 12 は維持します。
+- `bun run build` はWebビルド完了後にWorkersのdry-runを実行し、CIでも同じbundleを検証します。初回設定後はルートで `bun run build` → `bun run deploy`、またはActionsの「Cloudflare deploy」を手動実行します。Workers Paid を前提とし、bcryptjs cost 12 は維持します。
 - デプロイ前に人手で `bunx wrangler login`、`bunx wrangler hyperdrive create ctrl-y-v2 --connection-string=<supabase-connection-string>` を実行し、設定の仮 ID を置換してください。Cloudflare / Supabase のアカウントと、本番 DB への既存 migration 適用が必要です（この経路は migration を自動適用しません）。
 - `bunx wrangler secret put <名前>` で `JWT_SECRET`（32 バイト以上）、`VAPID_PUBLIC_KEY`、`VAPID_PRIVATE_KEY`、`VAPID_SUBJECT` を登録してください。
-- ローカル Workers 検証はルートの `.dev.vars` に同じ秘密値を設定し、`CLOUDFLARE_HYPERDRIVE_LOCAL_CONNECTION_STRING_HYPERDRIVE` に検証用 PostgreSQL 接続文字列を指定します。PGLite への fallback はありません。
-
-## Firebase
-
-- Hosting: `apps/web/dist`。SPA fallback と `/api/**` → `api` Functions rewrite。
-- Functions: `apps/api/dist` → `functions.js`、第2世代 Node.js 22、`asia-northeast1`。
-- `server.ts` の Hono アプリを Bun の `entry.ts` と Firebase の `functions.ts` で共有。
-- Functions は `@hono/node-server` の `getRequestListener` と `onRequest` で統合し、BunでNode.js ESMへbundleします。`dist/package.json` はFirebase用の独立した依存宣言で、workspace参照を含みません。
-- `firebase.json` の predeploy でそれぞれの成果物をビルド。
-- `.firebaserc` の `demo-ctrl-y-v2` は仮 ID。手動デプロイworkflowではSecretsの実際のプロジェクトIDを `--project` で指定して上書きします。
-
-ランタイムは [Firebase の Node.js ランタイム設定](https://firebase.google.com/docs/functions/manage-functions#set_nodejs_version) に準拠。
-この作業では Firebase ログイン・デプロイを行いません。
+- ローカル Workers 検証は `bun run build` 後に `bun run dev:workers`。ルートの `.dev.vars` に同じ秘密値を設定し、`CLOUDFLARE_HYPERDRIVE_LOCAL_CONNECTION_STRING_HYPERDRIVE` に検証用 PostgreSQL 接続文字列を指定します。PGLite への fallback はありません。
 
 ## Phase 2a 認証
 
@@ -128,9 +116,8 @@ Firebase と並存する移行途中のデプロイ経路です。通常の `bun
   パスワード8文字以上、あいことば4文字以上、いずれもUTF-8で72バイト以内。
   名前は前後の空白を除いて1〜50 Unicodeコードポイント、メールは前後空白除去・小文字化・254文字以内。
 - `JWT_SECRET` は32バイト以上必須。ローカルは `apps/api/.env.local`、
-  Firebaseでは同名Secretを設定します。秘密値のソース内fallbackはありません。
-- Functions の本番DB adapterは未接続です。Functionsの認証APIは接続実装まで利用できません。
-  `createApp` にrepositoryを注入する設計で、ローカルPGLiteを本番で誤使用しません。
+  Workersでは同名Secretを設定します。秘密値のソース内fallbackはありません。
+- `createApp` にrepositoryを注入し、WorkersはHyperdrive経由の本番DB、ローカルはPGLiteを使用します。
 - タスクの状態enumと所有者制約までを定義しています。状態遷移の操作・逆戻り防止は
   Phase 2bのタスク更新処理で実装済みです。給与のmonthは対象月1日のDATEです。
 - Playwrightは `.pglite/e2e` にmigrationを適用し、テスト専用JWT_SECRETで起動します。
@@ -153,8 +140,8 @@ Firebase と並存する移行途中のデプロイ経路です。通常の `bun
 - 子供のIN_PROGRESS → WAIT_REVIEWへの完了報告で親へ通知。親の差し戻しでは送信しません。
 - 送信はレスポンスを待たせないbest-effort。404/410の無効な購読は自動削除し、その他の失敗はログのみ。永続キュー・再送保証はありません。
 - `VAPID_PUBLIC_KEY`・`VAPID_PRIVATE_KEY`・`VAPID_SUBJECT`（`mailto:`または`https:`の連絡先URI）が必須。不足・形式不正はアプリ初期化時にエラーになります。
-  `npx web-push generate-vapid-keys`で鍵を生成し、`apps/api/.env.local`に設定してください。`.env.example`の値は置換必須のプレースホルダーです。Firebaseでは同名Secretを設定します。
-- 購読UI・PWA・service workerによる表示はPhase 2eで実装済みです。Functionsの応答後の実行継続も保証されないため、確実な配信には今後永続キューが必要です。
+  `npx web-push generate-vapid-keys`で鍵を生成し、`apps/api/.env.local`に設定してください。`.env.example`の値は置換必須のプレースホルダーです。Workersでは同名Secretを設定します。
+- 購読UI・PWA・service workerによる表示はPhase 2eで実装済みです。Workersでは `waitUntil` で応答後の通知処理を継続します。確実な配信には今後永続キューが必要です。
 
 ## Phase 2e PWA
 
