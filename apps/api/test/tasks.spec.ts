@@ -158,6 +158,7 @@ test("input validation rejects invalid fields and protected fields", async () =>
     { memo: "a".repeat(2001) },
     { reward: -1 },
     { reward: 1.5 },
+    { reward: 1000001 },
     { reward: 2147483648 },
     { reward: "1" },
     { deadline: "not-a-date" },

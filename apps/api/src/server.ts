@@ -1,3 +1,5 @@
+import { BlockList, isIP } from "node:net";
+
 import { compare, hash } from "bcryptjs";
 import { Hono } from "hono";
 import { bodyLimit } from "hono/body-limit";
@@ -7,6 +9,51 @@ import { authenticate, familyId, isUuid, issueToken, parentOnly, type AuthEnv } 
 import { notifyReview, readVapidConfig, validateVapidConfig, type VapidConfig } from "./push.js";
 import { createFailureLimiter } from "./rate-limit.js";
 import type { AuthRepository, TaskFields, TaskStatus } from "./repository.js";
+
+const nonPublicAddresses = new BlockList();
+for (const [address, prefix] of [
+  ["0.0.0.0", 8],
+  ["10.0.0.0", 8],
+  ["100.64.0.0", 10],
+  ["127.0.0.0", 8],
+  ["169.254.0.0", 16],
+  ["172.16.0.0", 12],
+  ["192.0.0.0", 24],
+  ["192.0.2.0", 24],
+  ["192.88.99.0", 24],
+  ["192.168.0.0", 16],
+  ["198.18.0.0", 15],
+  ["198.51.100.0", 24],
+  ["203.0.113.0", 24],
+  ["224.0.0.0", 3],
+] as const)
+  nonPublicAddresses.addSubnet(address, prefix, "ipv4");
+const globalIpv6 = new BlockList();
+globalIpv6.addSubnet("2000::", 3, "ipv6");
+for (const [address, prefix] of [
+  ["2001::", 23], // Special-purpose protocols, including Teredo.
+  ["2001:db8::", 32],
+  ["2002::", 16], // 6to4 can embed a private IPv4 destination.
+  ["3fff::", 20],
+] as const)
+  nonPublicAddresses.addSubnet(address, prefix, "ipv6");
+function isPublicPushHost(url: URL): boolean {
+  // URL canonicalizes alternate IPv4 spellings and compressed IPv6 before this check.
+  // Defense in depth only: DNS rebinding to a private IP at send time is a separate,
+  // harder problem that this literal-address check does not solve.
+  const hostname = url.hostname.replace(/\.$/, "");
+  const address = hostname.replace(/^\[|\]$/g, "");
+  const version = isIP(address);
+  if (version === 4) return !nonPublicAddresses.check(address, "ipv4");
+  if (version === 6)
+    return globalIpv6.check(address, "ipv6") && !nonPublicAddresses.check(address, "ipv6");
+  return (
+    hostname.includes(".") &&
+    !["localhost", "local", "internal", "lan", "home.arpa"].some(
+      (suffix) => hostname === suffix || hostname.endsWith(`.${suffix}`),
+    )
+  );
+}
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === "object" && !Array.isArray(value);
@@ -90,7 +137,7 @@ function taskFields(data: Record<string, unknown>, partial = false): Partial<Tas
       typeof data.reward !== "number" ||
       !Number.isInteger(data.reward) ||
       data.reward < 0 ||
-      data.reward > 2147483647
+      data.reward > 1000000
     )
       return fail();
     result.reward = data.reward;
@@ -149,6 +196,7 @@ export function createApp(options: {
     if (
       !endpoint ||
       endpoint.protocol !== "https:" ||
+      !isPublicPushHost(endpoint) ||
       endpoint.username ||
       endpoint.password ||
       typeof data.endpoint !== "string" ||

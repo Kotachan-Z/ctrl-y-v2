@@ -67,6 +67,7 @@ export const tasks = pgTable(
       foreignColumns: [children.id, children.parentId],
     }),
     check("tasks_reward_nonnegative", sql`${t.reward} >= 0`),
+    check("tasks_reward_max", sql`${t.reward} <= 1000000`),
   ],
 );
 export const payroll = pgTable(

@@ -125,6 +125,8 @@ seed は `parent@example.test` / `local-password`、子供のあいことばは 
 
 ## Phase 2c 給与集計
 
+- タスクの報酬は0〜1,000,000円の整数です。APIとDBのCHECK制約で範囲を検証します。
+
 - DONEタスクの件数・報酬合計を、子供ごとに`completedAt`のUTC暦月で再集計します。monthは`YYYY-MM-01`。
 - 完了承認・親によるDONE → WAIT_REVIEWへの差し戻し・DONEの報酬編集・削除で更新。同じ月の再集計は冪等で、対象がなくなると0件・0円を保持します。
 - `GET /api/payroll`: 親のみ、自分の子供全員の給与。`month`・`childId`で絞り込み可能。

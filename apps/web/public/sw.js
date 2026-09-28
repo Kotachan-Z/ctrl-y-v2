@@ -41,21 +41,20 @@ self.addEventListener("fetch", (event) => {
   )
     return;
   const navigation = request.mode === "navigate";
-  const asset =
-    url.pathname.startsWith("/assets/") ||
-    ["/icon.svg", "/manifest.webmanifest"].includes(url.pathname);
-  if (!navigation && !asset) return;
+  const asset = url.pathname.startsWith("/assets/");
+  const metadata = ["/icon.svg", "/manifest.webmanifest"].includes(url.pathname);
+  if (!navigation && !asset && !metadata) return;
   event.respondWith(
     (async () => {
       const cache = await caches.open(CACHE_NAME);
       // All routes share the same public SPA shell; no API data is stored here.
       const key = navigation ? "/" : request;
-      if (!navigation) {
+      if (asset && !navigation) {
         const cached = await cache.match(key);
         if (cached) return cached;
       }
       try {
-        const response = await fetch(request);
+        const response = await fetch(request, metadata ? { cache: "no-cache" } : undefined);
         if (response.ok) {
           // Storage failures must not turn a successful network response into an error.
           try {

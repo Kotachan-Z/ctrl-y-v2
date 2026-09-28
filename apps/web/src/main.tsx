@@ -289,7 +289,7 @@ function TaskEditor({ task, save }: { task?: Task; save: (data: FormData) => Pro
           type="number"
           required
           min={0}
-          max={2147483647}
+          max={1000000}
           step={1}
           defaultValue={task?.reward ?? 0}
         />

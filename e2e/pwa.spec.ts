@@ -103,3 +103,35 @@ test("parent can enable and disable notifications with a mocked push service", a
   await expect(page.getByRole("status")).toHaveText("通知を無効にしました");
   expect(methods).toEqual(["PUT", "DELETE"]);
 });
+
+test("PWA metadata refreshes online and falls back to cache offline", async ({ page, context }) => {
+  await page.goto("/");
+  await page.evaluate(async () => {
+    await navigator.serviceWorker.ready;
+  });
+  await page.reload();
+  await expect.poll(() => page.evaluate(() => !!navigator.serviceWorker.controller)).toBe(true);
+  const metadataPaths = ["/icon.svg", "/manifest.webmanifest"];
+  const refreshed = await page.evaluate(async (paths) => {
+    const cache = await caches.open("ctrl-y-static-v1");
+    for (const path of paths) await cache.put(path, new Response("stale deployment"));
+    return Promise.all(
+      paths.map(async (path) => {
+        const response = await fetch(path);
+        return { ok: response.ok, text: await response.text() };
+      }),
+    );
+  }, metadataPaths);
+  for (const response of refreshed) {
+    expect(response.ok).toBe(true);
+    expect(response.text).not.toBe("stale deployment");
+  }
+  expect(refreshed[0].text).toContain("<svg");
+  expect(JSON.parse(refreshed[1].text)).toMatchObject({ start_url: "/" });
+  await context.setOffline(true);
+  const offline = await page.evaluate(
+    async (paths) => Promise.all(paths.map(async (path) => (await fetch(path)).text())),
+    metadataPaths,
+  );
+  expect(offline).toEqual(refreshed.map((response) => response.text));
+});

@@ -68,6 +68,11 @@ test("task family ownership and payroll month uniqueness are DB constraints", as
   await db.insert(tasks).values({ ...task, childId: null });
   await expect(db.insert(tasks).values({ ...task, parentId: other!.id })).rejects.toThrow();
   await expect(db.insert(tasks).values({ ...task, reward: -1 })).rejects.toThrow();
+  await db.insert(tasks).values({ ...task, reward: 1000000 });
+  await expect(db.insert(tasks).values({ ...task, reward: 1000001 })).rejects.toThrow();
+  await expect(
+    db.update(tasks).set({ reward: 1000001 }).where(eq(tasks.id, created.id)),
+  ).rejects.toThrow();
   await db
     .insert(payroll)
     .values({ childId: child!.id, month: "2026-09-01", completedTaskCount: 1, totalReward: 100 });

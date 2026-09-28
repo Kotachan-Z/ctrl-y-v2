@@ -1,0 +1,1 @@
+ALTER TABLE "tasks" ADD CONSTRAINT "tasks_reward_max" CHECK ("tasks"."reward" <= 1000000);
