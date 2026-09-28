@@ -1,0 +1,12 @@
+{
+  "name": "Ctrl-Y（ご褒美ポケット）",
+  "short_name": "ご褒美ポケット",
+  "start_url": "/",
+  "display": "standalone",
+  "theme_color": "#173d36",
+  "background_color": "#f5faf7",
+  "lang": "ja",
+  "icons": [
+    { "src": "/icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any maskable" }
+  ]
+}

@@ -3,7 +3,7 @@
 親子向けタスク報酬管理アプリ「Ctrl-Y（ご褒美ポケット）」の技術スタック刷新版。
 元プロジェクト: https://github.com/ctrl-Yc/Ctrl-Y （機能仕様の参照のみ。コード移植なし）
 
-Phase 2b: 親・子供の認証とデータモデルに加え、タスク管理（CRUD・ステータス遷移、PR #2）まで main にマージ済みです。Phase 2cの給与集計も実装済みです。Phase 2dの通知も実装済みです。PWAは後続フェーズです。
+Phase 2b: 親・子供の認証とデータモデルに加え、タスク管理（CRUD・ステータス遷移、PR #2）まで main にマージ済みです。Phase 2cの給与集計も実装済みです。Phase 2dの通知も実装済みです。Phase 2eのPWAも実装済みです。
 検証状況と環境制約は [Phase 2a 検証記録](docs/phase-2a-verification.md) を参照してください。
 
 ## 構成
@@ -140,4 +140,13 @@ seed は `parent@example.test` / `local-password`、子供のあいことばは 
 - 送信はレスポンスを待たせないbest-effort。404/410の無効な購読は自動削除し、その他の失敗はログのみ。永続キュー・再送保証はありません。
 - `VAPID_PUBLIC_KEY`・`VAPID_PRIVATE_KEY`・`VAPID_SUBJECT`（`mailto:`または`https:`の連絡先URI）が必須。不足・形式不正はアプリ初期化時にエラーになります。
   `npx web-push generate-vapid-keys`で鍵を生成し、`apps/api/.env.local`に設定してください。`.env.example`の値は置換必須のプレースホルダーです。Firebaseでは同名Secretを設定します。
-- API側のみの実装です。購読UI・PWA・service workerによる表示はPhase 2eで対応します。Functionsの応答後の実行継続も保証されないため、確実な配信には今後永続キューが必要です。
+- 購読UI・PWA・service workerによる表示はPhase 2eで実装済みです。Functionsの応答後の実行継続も保証されないため、確実な配信には今後永続キューが必要です。
+
+## Phase 2e PWA
+
+- 手書きのmanifest・SVGアイコン（any / maskable）でホーム画面への追加に対応。テーマ色・iOS向け表示名も設定しています。
+- `/sw.js`を登録し、更新時は即時有効化して旧バージョンのキャッシュを削除します。
+- ページHTMLはnetwork-first、ビルド済み静的アセットはcache-first。訪問・読み込み済みの画面をオフラインでも開けます。キャッシュは静的コンテンツのみで、`/api/`は一切介入・保存しません。オフラインでタスク・給与データの取得や更新はできません。
+- 親の`/top`で通知を有効化・解除できます。許可後にVAPID公開鍵で購読しAPIへ保存、解除時はブラウザとAPI双方の購読を解除します。未対応・許可拒否は画面に表示します。
+- pushのタイトル・本文を通知表示し、クリックで既存ウィンドウを開くか`/`へ移動します。HTTPS（ローカルはlocalhost）が必要です。iOSの通知はホーム画面に追加した対応環境で利用します。
+- Playwrightでmanifest・service worker登録・親トップの通知操作を検証します。購読処理はブラウザAPIをモックし、外部pushサービスには接続しません。

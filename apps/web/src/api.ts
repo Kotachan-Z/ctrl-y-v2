@@ -17,7 +17,11 @@ export class ApiError extends Error {
 }
 export async function api<T>(
   path: string,
-  options: { body?: unknown; role?: Role; method?: "GET" | "POST" | "PATCH" | "DELETE" } = {},
+  options: {
+    body?: unknown;
+    role?: Role;
+    method?: "GET" | "POST" | "PATCH" | "PUT" | "DELETE";
+  } = {},
 ): Promise<T> {
   const token = options.role ? tokens.get(options.role) : null;
   const response = await fetch(`/api${path}`, {
