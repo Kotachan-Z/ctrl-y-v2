@@ -5,6 +5,8 @@ dist/
 .env*
 !.env.example
 .firebase/
+.wrangler/
+.dev.vars*
 *service-account*.json
 *-firebase-adminsdk-*.json
 *-debug.log

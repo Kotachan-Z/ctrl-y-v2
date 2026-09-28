@@ -161,6 +161,7 @@ export function createApp(options: {
   repository: AuthRepository | (() => AuthRepository);
   jwtSecret: string;
   vapid?: VapidConfig;
+  backgroundTask?: (task: Promise<void>) => void;
 }) {
   if (new TextEncoder().encode(options.jwtSecret).length < 32)
     throw new Error("JWT_SECRET must be at least 32 bytes");
@@ -393,8 +394,10 @@ export function createApp(options: {
       throw new HTTPException(409, {
         message: "タスクの状態または担当者が変わっています。一覧を更新してください",
       });
-    if (identity.role === "child" && task.status === "WAIT_REVIEW")
-      void notifyReview(repo(), vapid, parentId, task.name);
+    if (identity.role === "child" && task.status === "WAIT_REVIEW") {
+      const notification = notifyReview(repo(), vapid, parentId, task.name);
+      options.backgroundTask?.(notification);
+    }
     return c.json({ task });
   });
   // Used by guards to validate expiration, identity, and family membership server-side.

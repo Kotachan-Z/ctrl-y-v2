@@ -5,7 +5,8 @@
   "type": "module",
   "exports": {
     ".": "./src/schema.ts",
-    "./local": "./src/local.ts"
+    "./local": "./src/local.ts",
+    "./production": "./src/production.ts"
   },
   "scripts": {
     "type-check": "tsc --noEmit",
@@ -17,7 +18,8 @@
   "dependencies": {
     "@electric-sql/pglite": "0.4.4",
     "bcryptjs": "3.0.3",
-    "drizzle-orm": "0.45.2"
+    "drizzle-orm": "0.45.2",
+    "postgres": "3.4.9"
   },
   "devDependencies": {
     "drizzle-kit": "0.31.10"

@@ -1,0 +1,18 @@
+name = "ctrl-y-v2"
+main = "apps/api/src/worker.ts"
+compatibility_date = "2026-09-28"
+compatibility_flags = ["nodejs_compat"]
+
+[assets]
+directory = "./apps/web/dist"
+binding = "ASSETS"
+not_found_handling = "single-page-application"
+# Keep API navigation requests out of the SPA fallback.
+run_worker_first = ["/api", "/api/*"]
+
+[[hyperdrive]]
+binding = "HYPERDRIVE"
+# Requires your own Cloudflare/Supabase accounts:
+# wrangler hyperdrive create <name> --connection-string=<supabase-connection-string>
+# Paste the resulting id below before deploying.
+id = "REPLACE_WITH_REAL_HYPERDRIVE_ID"

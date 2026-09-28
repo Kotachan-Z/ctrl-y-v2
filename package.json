@@ -13,7 +13,9 @@
     "oxlint": "oxlint",
     "oxfmt": "oxfmt",
     "test": "turbo test",
-    "test:e2e": "playwright test"
+    "test:e2e": "playwright test",
+    "dev:workers": "bun run --filter @ctrl-y/api dev:workers",
+    "deploy": "bun run --filter @ctrl-y/api deploy"
   },
   "devDependencies": {
     "@playwright/test": "1.58.2",

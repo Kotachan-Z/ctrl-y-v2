@@ -1,13 +1,13 @@
 import { children, parents, payroll, tasks } from "@ctrl-y/database";
 import { and, count, eq, gte, isNull, lt, sql } from "drizzle-orm";
-import type { PgliteDatabase } from "drizzle-orm/pglite";
+import type { PgDatabase, PgQueryResultHKT } from "drizzle-orm/pg-core";
 
 export type PushSubscription = NonNullable<typeof parents.$inferSelect.pushSubscription>;
 
 export type TaskFields = Pick<typeof tasks.$inferInsert, "name" | "memo" | "reward" | "deadline">;
 export type TaskStatus = typeof tasks.$inferSelect.status;
 
-type Transaction = Parameters<Parameters<PgliteDatabase["transaction"]>[0]>[0];
+type Transaction = Pick<PgDatabase<PgQueryResultHKT>, "select" | "insert">;
 
 async function recalculatePayroll(tx: Transaction, childId: string, month: string) {
   const start = new Date(`${month}T00:00:00.000Z`);
@@ -50,7 +50,9 @@ async function recalculateTaskPayroll(
 
 // Routes depend on this repository, not a connection driver. A Postgres adapter
 // can replace this implementation without changing authentication or routes.
-export function createRepository(db: PgliteDatabase) {
+export function createRepository<T extends PgQueryResultHKT, S extends Record<string, unknown>>(
+  db: PgDatabase<T, S>,
+) {
   return {
     async recalculatePayroll(childId: string, month: string) {
       return db.transaction((tx) => recalculatePayroll(tx, childId, month));
