@@ -94,7 +94,7 @@ test.each(["JWT_SECRET", "VAPID_PUBLIC_KEY", "VAPID_PRIVATE_KEY", "VAPID_SUBJECT
   },
 );
 
-test("warm overlapping requests reuse the app but keep repositories and cleanup separate", async () => {
+test("warm overlapping requests reconstruct the app and keep repositories and cleanup separate", async () => {
   const { default: worker } = await import("../src/worker.js");
   const first = { db: { id: 1 }, sql: { end: vi.fn().mockResolvedValue(undefined) } };
   const second = { db: { id: 2 }, sql: { end: vi.fn().mockResolvedValue(undefined) } };
@@ -121,7 +121,7 @@ test("warm overlapping requests reuse the app but keep repositories and cleanup 
     "2",
   ]);
   await Promise.all([...a.pending, ...b.pending]);
-  expect(mocks.app).toHaveBeenCalledTimes(1);
+  expect(mocks.app).toHaveBeenCalledTimes(2);
   expect(first.sql.end).toHaveBeenCalledTimes(1);
   expect(second.sql.end).toHaveBeenCalledTimes(1);
 });

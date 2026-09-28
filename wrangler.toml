@@ -10,9 +10,10 @@ not_found_handling = "single-page-application"
 # Keep API navigation requests out of the SPA fallback.
 run_worker_first = ["/api", "/api/*"]
 
+# Keep caching disabled for read-after-write correctness.
 [[hyperdrive]]
 binding = "HYPERDRIVE"
 # Requires your own Cloudflare/Supabase accounts:
-# wrangler hyperdrive create <name> --connection-string=<supabase-connection-string>
+# wrangler hyperdrive create <name> --connection-string=<supabase-connection-string> --caching-disabled
 # Paste the resulting id below before deploying.
 id = "REPLACE_WITH_REAL_HYPERDRIVE_ID"

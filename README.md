@@ -94,10 +94,10 @@ seed は `parent@example.test` / `local-password`、子供のあいことばは 
 Worker・CIのbundle検証・手動デプロイworkflowは実装済みです。初回デプロイ前のアカウント固有設定は以下のとおりです。通常の `bun run dev` は Bun + PGLite を使用します。
 
 - ルートの `wrangler.toml`: Web の静的配信・SPA fallback、`/api`・`/api/*` の Worker 優先ルーティング、Hyperdrive binding。
-- `apps/api/src/worker.ts`: Hono を直接実行し、env の JWT/VAPID を既存の検証に渡します。アプリは再利用し、DB 接続はリクエスト単位で生成・通知完了後に終了します。
+- `apps/api/src/worker.ts`: Hono を直接実行し、env の JWT/VAPID を既存の検証に渡します。アプリと DB 接続はリクエスト単位で生成・通知完了後に終了します。
 - `packages/database/src/production.ts`: Hyperdrive + postgres.js + Drizzle の接続ファクトリ。
 - `bun run build` はWebビルド完了後にWorkersのdry-runを実行し、CIでも同じbundleを検証します。初回設定後はルートで `bun run build` → `bun run deploy`、またはActionsの「Cloudflare deploy」を手動実行します。Workers Paid を前提とし、bcryptjs cost 12 は維持します。
-- デプロイ前に人手で `bunx wrangler login`、`bunx wrangler hyperdrive create ctrl-y-v2 --connection-string=<supabase-connection-string>` を実行し、設定の仮 ID を置換してください。Cloudflare / Supabase のアカウントと、本番 DB への既存 migration 適用が必要です（この経路は migration を自動適用しません）。
+- デプロイ前に人手で `bunx wrangler login`、`bunx wrangler hyperdrive create ctrl-y-v2 --connection-string=<supabase-connection-string> --caching-disabled` を実行し、設定の仮 ID を置換してください。Cloudflare / Supabase のアカウントと、本番 DB への既存 migration 適用が必要です（この経路は migration を自動適用しません）。
 - `bunx wrangler secret put <名前>` で `JWT_SECRET`（32 バイト以上）、`VAPID_PUBLIC_KEY`、`VAPID_PRIVATE_KEY`、`VAPID_SUBJECT` を登録してください。
 - ローカル Workers 検証は `bun run build` 後に `bun run dev:workers`。ルートの `.dev.vars` に同じ秘密値を設定し、`CLOUDFLARE_HYPERDRIVE_LOCAL_CONNECTION_STRING_HYPERDRIVE` に検証用 PostgreSQL 接続文字列を指定します。PGLite への fallback はありません。
 

@@ -3,7 +3,7 @@ import { HTTPException } from "hono/http-exception";
 // Bound attacker-controlled identifiers while allowing normal per-process traffic.
 export const FAILURE_LIMITER_MAX_ENTRIES = 10_000;
 
-// Per process only: multiple Functions instances do not share these counters.
+// Per isolate only: multiple Workers isolates do not share these counters.
 export function createFailureLimiter() {
   const entries = new Map<string, { failures: number; inFlight: number; expiresAt: number }>();
   // Insertion order tracks when entries became idle; eviction also checks lockout expiry.

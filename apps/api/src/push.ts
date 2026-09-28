@@ -66,6 +66,7 @@ export async function notifyReview(
     );
     const response = await fetch(subscription.endpoint, {
       ...payload,
+      redirect: "manual",
       signal: AbortSignal.timeout(5000),
     });
     if (response.ok) return;

@@ -160,6 +160,7 @@ test("only a successful child submission sends once, not duplicate submissions o
   );
   expect(send).toHaveBeenCalledWith(subscription.endpoint, {
     ...payload,
+    redirect: "manual",
     signal: expect.any(AbortSignal),
   });
   expect((await submit(id)).status).toBe(409);
@@ -168,6 +169,28 @@ test("only a successful child submission sends once, not duplicate submissions o
   );
   expect((await submit(id, parent)).status).toBe(200);
   expect(send).toHaveBeenCalledTimes(1);
+});
+test("redirect responses are not followed and preserve the subscription", async () => {
+  await fixture.repository.setPushSubscription(parentId, subscription);
+  const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+  try {
+    // Fetch's opaque redirect response cannot be constructed with ResponseInit.
+    const redirect = Response.error();
+    Object.defineProperty(redirect, "type", { value: "opaqueredirect" });
+    send.mockResolvedValue(redirect);
+    await expect(
+      notifyReview(fixture.repository, readVapidConfig(), parentId, "task"),
+    ).resolves.toBeUndefined();
+    expect(send).toHaveBeenCalledExactlyOnceWith(subscription.endpoint, {
+      ...payload,
+      redirect: "manual",
+      signal: expect.any(AbortSignal),
+    });
+    expect(warn).toHaveBeenCalledExactlyOnceWith("Push delivery failed", 0);
+    expect(await stored()).toEqual(subscription);
+  } finally {
+    warn.mockRestore();
+  }
 });
 test("no subscription means no delivery", async () => {
   expect((await submit(await task())).status).toBe(200);

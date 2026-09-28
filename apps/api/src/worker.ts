@@ -23,14 +23,13 @@ function currentRequest() {
   if (!request) throw new Error("Repository accessed outside a Worker request");
   return request;
 }
-let app: ReturnType<typeof createApp> | undefined;
 
 export default {
   async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
     const pathname = new URL(request.url).pathname;
     if (pathname !== "/api" && !pathname.startsWith("/api/")) return env.ASSETS.fetch(request);
 
-    app ??= createApp({
+    const app = createApp({
       jwtSecret: env.JWT_SECRET ?? "",
       vapid: {
         publicKey: env.VAPID_PUBLIC_KEY ?? "",
@@ -40,14 +39,13 @@ export default {
       repository: () => currentRequest().repository,
       backgroundTask: (task) => currentRequest().pending.push(task),
     });
-    const handler = app;
 
-    // Cache the app, never a connection that another request may close or use.
+    // Each request owns its connection and reads the current secret bindings.
     const { db, sql } = createProductionDatabase(env.HYPERDRIVE);
     const pending: Promise<void>[] = [];
     try {
       return await requests.run({ repository: createRepository(db), pending }, () =>
-        handler.fetch(request),
+        app.fetch(request),
       );
     } finally {
       // Push rejection cleanup can still use the DB after the response is ready.
