@@ -198,6 +198,29 @@ export function createApp(options: {
       });
     });
   });
+  const ownedPayrollChild = async (parentId: string, id: string) => {
+    if (!isUuid(id)) throw new HTTPException(400, { message: "子供IDが不正です" });
+    const record = await repo().childById(id);
+    if (!record || record.parent.id !== parentId)
+      throw new HTTPException(404, { message: "子供が見つかりません" });
+    return record.child;
+  };
+  app.get("/api/payroll", auth, parentOnly, async (c) => {
+    const parentId = familyId(c.get("identity"));
+    const month = c.req.query("month");
+    const childId = c.req.query("childId");
+    if (month !== undefined && !/^(?!0000)\d{4}-(?:0[1-9]|1[0-2])-01$/.test(month))
+      throw new HTTPException(400, { message: "対象月が不正です" });
+    if (childId !== undefined) await ownedPayrollChild(parentId, childId);
+    return c.json({ payroll: await repo().listPayroll(parentId, month, childId) });
+  });
+  app.get("/api/children/:childId/payroll", auth, async (c) => {
+    const identity = c.get("identity");
+    const child = await ownedPayrollChild(familyId(identity), c.req.param("childId"));
+    if (identity.role === "child" && identity.id.toLowerCase() !== child.id)
+      throw new HTTPException(403, { message: "この操作は許可されていません" });
+    return c.json({ payroll: await repo().listPayroll(familyId(identity), undefined, child.id) });
+  });
   app.post("/api/tasks", auth, parentOnly, async (c) => {
     const fields = taskFields(await body(c.req.raw));
     if (fields.name === undefined || fields.reward === undefined || fields.deadline === undefined)
@@ -264,7 +287,7 @@ export function createApp(options: {
     const identity = c.get("identity");
     const parentId = familyId(identity);
     const id = c.req.param("taskId");
-    await ownedTask(parentId, id);
+    const current = await ownedTask(parentId, id);
     const data = await body(c.req.raw);
     if (
       Object.keys(data).some((key) => key !== "status") ||
@@ -272,7 +295,9 @@ export function createApp(options: {
       data.status === "TODO"
     )
       throw new HTTPException(400, { message: "ステータス変更が不正です" });
-    if ((data.status === "DONE") !== (identity.role === "parent"))
+    const reopening =
+      identity.role === "parent" && current.status === "DONE" && data.status === "WAIT_REVIEW";
+    if (!reopening && (data.status === "DONE") !== (identity.role === "parent"))
       throw new HTTPException(403, { message: "この操作は許可されていません" });
     const task = await repo().transitionTask(
       parentId,

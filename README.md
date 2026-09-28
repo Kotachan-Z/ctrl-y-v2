@@ -3,7 +3,7 @@
 親子向けタスク報酬管理アプリ「Ctrl-Y（ご褒美ポケット）」の技術スタック刷新版。
 元プロジェクト: https://github.com/ctrl-Yc/Ctrl-Y （機能仕様の参照のみ。コード移植なし）
 
-Phase 2b: 親・子供の認証とデータモデルに加え、タスク管理（CRUD・ステータス遷移、PR #2）まで main にマージ済みです。給与集計・通知・PWAは後続フェーズです。
+Phase 2b: 親・子供の認証とデータモデルに加え、タスク管理（CRUD・ステータス遷移、PR #2）まで main にマージ済みです。Phase 2cの給与集計も実装済みです。通知・PWAは後続フェーズです。
 検証状況と環境制約は [Phase 2a 検証記録](docs/phase-2a-verification.md) を参照してください。
 
 ## 構成
@@ -122,3 +122,11 @@ seed は `parent@example.test` / `local-password`、子供のあいことばは 
 - タスクの状態enumと所有者制約までを定義しています。状態遷移の操作・逆戻り防止は
   Phase 2bのタスク更新処理で実装済みです。給与のmonthは対象月1日のDATEです。
 - Playwrightは `.pglite/e2e` にmigrationを適用し、テスト専用JWT_SECRETで起動します。
+
+## Phase 2c 給与集計
+
+- DONEタスクの件数・報酬合計を、子供ごとに`completedAt`のUTC暦月で再集計します。monthは`YYYY-MM-01`。
+- 完了承認・親によるDONE → WAIT_REVIEWへの差し戻し・DONEの報酬編集・削除で更新。同じ月の再集計は冪等で、対象がなくなると0件・0円を保持します。
+- `GET /api/payroll`: 親のみ、自分の子供全員の給与。`month`・`childId`で絞り込み可能。
+- `GET /api/children/:childId/payroll`: 自分の子供の親、または子供本人のみ。月の昇順で履歴を返します。
+- 両APIのレスポンスは`{ payroll: [...] }`。各行は給与テーブルの項目を返します。
