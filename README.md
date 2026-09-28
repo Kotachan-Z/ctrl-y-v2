@@ -3,7 +3,7 @@
 親子向けタスク報酬管理アプリ「Ctrl-Y（ご褒美ポケット）」の技術スタック刷新版。
 元プロジェクト: https://github.com/ctrl-Yc/Ctrl-Y （機能仕様の参照のみ。コード移植なし）
 
-Phase 2b: 親・子供の認証とデータモデルに加え、タスク管理（CRUD・ステータス遷移、PR #2）まで main にマージ済みです。Phase 2cの給与集計も実装済みです。通知・PWAは後続フェーズです。
+Phase 2b: 親・子供の認証とデータモデルに加え、タスク管理（CRUD・ステータス遷移、PR #2）まで main にマージ済みです。Phase 2cの給与集計も実装済みです。Phase 2dの通知も実装済みです。PWAは後続フェーズです。
 検証状況と環境制約は [Phase 2a 検証記録](docs/phase-2a-verification.md) を参照してください。
 
 ## 構成
@@ -130,3 +130,14 @@ seed は `parent@example.test` / `local-password`、子供のあいことばは 
 - `GET /api/payroll`: 親のみ、自分の子供全員の給与。`month`・`childId`で絞り込み可能。
 - `GET /api/children/:childId/payroll`: 自分の子供の親、または子供本人のみ。月の昇順で履歴を返します。
 - 両APIのレスポンスは`{ payroll: [...] }`。各行は給与テーブルの項目を返します。
+
+## Phase 2d 通知
+
+- `GET /api/push/public-key`: 認証不要、`{ publicKey }`を返します。
+- `PUT /api/parents/push-subscription`: 親のみ、ブラウザの`{ endpoint, keys: { p256dh, auth } }`を保存・上書きします（親ごとに1件）。
+- `DELETE /api/parents/push-subscription`: 親のみ、自分の購読を解除します。
+- 子供のIN_PROGRESS → WAIT_REVIEWへの完了報告で親へ通知。親の差し戻しでは送信しません。
+- 送信はレスポンスを待たせないbest-effort。404/410の無効な購読は自動削除し、その他の失敗はログのみ。永続キュー・再送保証はありません。
+- `VAPID_PUBLIC_KEY`・`VAPID_PRIVATE_KEY`・`VAPID_SUBJECT`（`mailto:`または`https:`の連絡先URI）が必須。不足・形式不正はアプリ初期化時にエラーになります。
+  `npx web-push generate-vapid-keys`で鍵を生成し、`apps/api/.env.local`に設定してください。`.env.example`の値は置換必須のプレースホルダーです。Firebaseでは同名Secretを設定します。
+- API側のみの実装です。購読UI・PWA・service workerによる表示はPhase 2eで対応します。Functionsの応答後の実行継続も保証されないため、確実な配信には今後永続キューが必要です。

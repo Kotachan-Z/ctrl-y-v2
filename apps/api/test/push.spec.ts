@@ -1,0 +1,216 @@
+import { children, parents } from "@ctrl-y/database";
+import { afterAll, beforeAll, beforeEach, expect, test, vi } from "vitest";
+import webPush from "web-push";
+
+import { issueToken } from "../src/auth.js";
+import { notifyReview, readVapidConfig } from "../src/push.js";
+import { secret, testApp } from "./helpers.js";
+import { vapidEnv } from "./vapid-fixture.js";
+
+vi.mock("web-push", () => ({ default: { sendNotification: vi.fn() } }));
+const send = vi.mocked(webPush.sendNotification);
+const subscription = {
+  endpoint: "https://push.example.test/subscription",
+  keys: { p256dh: "test-browser-key", auth: "test-browser-auth" },
+};
+let fixture: Awaited<ReturnType<typeof testApp>>;
+let parentId: string, childId: string, parent: string, child: string, otherId: string;
+beforeAll(async () => {
+  fixture = await testApp();
+  const [p, q] = await fixture.db
+    .insert(parents)
+    .values([
+      { email: "push@example.test", passwordHash: "unused" },
+      { email: "other-push@example.test", passwordHash: "unused" },
+    ])
+    .returning();
+  parentId = p.id;
+  otherId = q.id;
+  const [c] = await fixture.db.insert(children).values({ parentId, name: "子供" }).returning();
+  childId = c.id;
+  parent = await issueToken({ role: "parent", id: parentId }, secret);
+  child = await issueToken({ role: "child", id: childId, parentId }, secret);
+}, 30000);
+afterAll(async () => {
+  await fixture?.client.close();
+});
+beforeEach(async () => {
+  send.mockReset();
+  send.mockResolvedValue({ statusCode: 201, body: "", headers: {} });
+  await fixture.repository.setPushSubscription(parentId, null);
+});
+function request(path: string, method = "GET", token = parent, data?: unknown) {
+  return fixture.app.request(`/api${path}`, {
+    method,
+    headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+    body: data === undefined ? undefined : JSON.stringify(data),
+  });
+}
+const stored = async () => (await fixture.repository.parentById(parentId))?.pushSubscription;
+async function task() {
+  const record = await fixture.repository.createTask(parentId, {
+    name: "おそうじ",
+    reward: 100,
+    deadline: new Date("2027-01-01"),
+  });
+  expect(
+    (await request(`/tasks/${record.id}/status`, "PATCH", child, { status: "IN_PROGRESS" })).status,
+  ).toBe(200);
+  return record.id;
+}
+const submit = (id: string, token = child) =>
+  request(`/tasks/${id}/status`, "PATCH", token, { status: "WAIT_REVIEW" });
+
+test("public key is available without authentication and never includes private configuration", async () => {
+  const response = await request("/push/public-key", "GET", "");
+  expect(response.status).toBe(200);
+  expect(await response.json()).toEqual({ publicKey: vapidEnv.VAPID_PUBLIC_KEY });
+});
+test("subscription writes require a parent and affect only that parent", async () => {
+  await fixture.repository.setPushSubscription(otherId, subscription);
+  for (const method of ["PUT", "DELETE"]) {
+    expect((await request("/parents/push-subscription", method, "", subscription)).status).toBe(
+      401,
+    );
+    expect((await request("/parents/push-subscription", method, child, subscription)).status).toBe(
+      403,
+    );
+  }
+  expect(await stored()).toBeNull();
+  for (const endpoint of [subscription.endpoint, `${subscription.endpoint}/replacement`]) {
+    expect(
+      (
+        await request("/parents/push-subscription", "PUT", parent, {
+          ...subscription,
+          endpoint,
+          expirationTime: null,
+        })
+      ).status,
+    ).toBe(200);
+    expect(await stored()).toEqual({ ...subscription, endpoint });
+  }
+  for (let i = 0; i < 2; i++) {
+    expect((await request("/parents/push-subscription", "DELETE")).status).toBe(200);
+    expect(await stored()).toBeNull();
+  }
+  expect((await fixture.repository.parentById(otherId))?.pushSubscription).toEqual(subscription);
+});
+test("invalid subscription bodies are rejected without changing storage", async () => {
+  await fixture.repository.setPushSubscription(parentId, subscription);
+  for (const data of [
+    null,
+    [],
+    {},
+    { endpoint: subscription.endpoint },
+    { ...subscription, endpoint: 1 },
+    { ...subscription, endpoint: "not a URL" },
+    { ...subscription, endpoint: "http://push.example.test" },
+    { ...subscription, keys: null },
+    { ...subscription, keys: [] },
+    { ...subscription, keys: { p256dh: "", auth: "a" } },
+    { ...subscription, keys: { p256dh: "key", auth: " " } },
+    { ...subscription, keys: { p256dh: 1, auth: "a" } },
+    { ...subscription, keys: { p256dh: "key" } },
+  ])
+    expect((await request("/parents/push-subscription", "PUT", parent, data)).status).toBe(400);
+  expect(
+    (
+      await fixture.app.request("/api/parents/push-subscription", {
+        method: "PUT",
+        headers: { Authorization: `Bearer ${parent}` },
+        body: "{",
+      })
+    ).status,
+  ).toBe(400);
+  expect(await stored()).toEqual(subscription);
+});
+test("only a successful child submission sends once, not duplicate submissions or parent reopens", async () => {
+  await fixture.repository.setPushSubscription(parentId, subscription);
+  const id = await task();
+  expect(send).not.toHaveBeenCalled();
+  expect((await submit(id, parent)).status).toBe(403);
+  expect((await submit(id)).status).toBe(200);
+  await vi.waitFor(() => expect(send).toHaveBeenCalledTimes(1));
+  expect(send).toHaveBeenCalledWith(
+    subscription,
+    JSON.stringify({ title: "レビュー待ち", body: "おそうじ が完了報告されました" }),
+    { vapidDetails: readVapidConfig(), timeout: 5000 },
+  );
+  expect((await submit(id)).status).toBe(409);
+  expect((await request(`/tasks/${id}/status`, "PATCH", parent, { status: "DONE" })).status).toBe(
+    200,
+  );
+  expect((await submit(id, parent)).status).toBe(200);
+  expect(send).toHaveBeenCalledTimes(1);
+});
+test("no subscription means no delivery", async () => {
+  expect((await submit(await task())).status).toBe(200);
+  await notifyReview(fixture.repository, readVapidConfig(), parentId, "おそうじ");
+  expect(send).not.toHaveBeenCalled();
+});
+test.each([404, 410, 429, 500])(
+  "provider status %i is best-effort and only dead subscriptions are removed",
+  async (statusCode) => {
+    await fixture.repository.setPushSubscription(parentId, subscription);
+    send.mockRejectedValue({ statusCode });
+    expect((await submit(await task())).status).toBe(200);
+    await vi.waitFor(() => expect(send).toHaveBeenCalledTimes(1));
+    if (statusCode === 404 || statusCode === 410)
+      await vi.waitFor(async () => expect(await stored()).toBeNull());
+    else expect(await stored()).toEqual(subscription);
+  },
+);
+test("a pending push does not delay the response and its late rejection preserves a replacement", async () => {
+  await fixture.repository.setPushSubscription(parentId, subscription);
+  let reject!: (error: unknown) => void;
+  send.mockImplementation(
+    () =>
+      new Promise((_resolve, fail) => {
+        reject = fail;
+      }),
+  );
+  expect((await submit(await task())).status).toBe(200);
+  await vi.waitFor(() => expect(send).toHaveBeenCalledTimes(1));
+  const replacement = { ...subscription, keys: { ...subscription.keys, auth: "new-auth" } };
+  await fixture.repository.setPushSubscription(parentId, replacement);
+  const cleanup = vi.spyOn(fixture.repository, "clearPushSubscriptionIfUnchanged");
+  reject({ statusCode: 410 });
+  await vi.waitFor(() => expect(cleanup).toHaveBeenCalledOnce());
+  await cleanup.mock.results[0].value;
+  expect(await stored()).toEqual(replacement);
+  cleanup.mockRestore();
+});
+test("network, lookup and cleanup failures never reject notification work", async () => {
+  await fixture.repository.setPushSubscription(parentId, subscription);
+  send.mockRejectedValue(new Error("offline"));
+  await expect(
+    notifyReview(fixture.repository, readVapidConfig(), parentId, "task"),
+  ).resolves.toBeUndefined();
+  expect(await stored()).toEqual(subscription);
+  const lookup = vi
+    .spyOn(fixture.repository, "parentById")
+    .mockRejectedValueOnce(new Error("database unavailable"));
+  await expect(
+    notifyReview(fixture.repository, readVapidConfig(), parentId, "task"),
+  ).resolves.toBeUndefined();
+  lookup.mockRestore();
+  send.mockRejectedValue({ statusCode: 410 });
+  const cleanup = vi
+    .spyOn(fixture.repository, "clearPushSubscriptionIfUnchanged")
+    .mockRejectedValueOnce(new Error("database unavailable"));
+  await expect(
+    notifyReview(fixture.repository, readVapidConfig(), parentId, "task"),
+  ).resolves.toBeUndefined();
+  cleanup.mockRestore();
+  expect(await stored()).toEqual(subscription);
+});
+test("VAPID configuration rejects missing and malformed secrets without fallback", () => {
+  for (const name of ["VAPID_PUBLIC_KEY", "VAPID_PRIVATE_KEY", "VAPID_SUBJECT"])
+    for (const value of [undefined, "", "invalid"])
+      expect(() => readVapidConfig({ ...vapidEnv, [name]: value })).toThrow(name);
+  for (const subject of ["http://example.test", "mailto:", "mailto:not-an-email", "https://"])
+    expect(() => readVapidConfig({ ...vapidEnv, VAPID_SUBJECT: subject })).toThrow("VAPID_SUBJECT");
+  expect(
+    readVapidConfig({ ...vapidEnv, VAPID_SUBJECT: "https://example.test/contact" }).subject,
+  ).toBe("https://example.test/contact");
+});

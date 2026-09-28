@@ -2,6 +2,8 @@ import { children, parents, payroll, tasks } from "@ctrl-y/database";
 import { and, count, eq, gte, isNull, lt, sql } from "drizzle-orm";
 import type { PgliteDatabase } from "drizzle-orm/pglite";
 
+export type PushSubscription = NonNullable<typeof parents.$inferSelect.pushSubscription>;
+
 export type TaskFields = Pick<typeof tasks.$inferInsert, "name" | "memo" | "reward" | "deadline">;
 export type TaskStatus = typeof tasks.$inferSelect.status;
 
@@ -177,6 +179,19 @@ export function createRepository(db: PgliteDatabase) {
         .onConflictDoNothing({ target: parents.email })
         .returning();
       return result.at(0);
+    },
+    async setPushSubscription(parentId: string, subscription: PushSubscription | null) {
+      await db
+        .update(parents)
+        .set({ pushSubscription: subscription })
+        .where(eq(parents.id, parentId));
+    },
+    async clearPushSubscriptionIfUnchanged(parentId: string, subscription: PushSubscription) {
+      // A delayed provider rejection must not erase a newer browser subscription.
+      await db
+        .update(parents)
+        .set({ pushSubscription: null })
+        .where(and(eq(parents.id, parentId), eq(parents.pushSubscription, subscription)));
     },
     async parentByEmail(email: string) {
       return (await db.select().from(parents).where(eq(parents.email, email))).at(0);

@@ -16,9 +16,11 @@
     "bcryptjs": "3.0.3",
     "drizzle-orm": "0.45.2",
     "firebase-functions": "7.2.2",
-    "hono": "4.12.10"
+    "hono": "4.12.10",
+    "web-push": "3.6.7"
   },
   "devDependencies": {
+    "@types/web-push": "3.6.4",
     "vitest": "4.1.5"
   },
   "engines": {

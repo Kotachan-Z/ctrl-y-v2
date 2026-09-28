@@ -1,2 +1,4 @@
 import { defineConfig } from "vitest/config";
-export default defineConfig({ test: { include: ["test/**/*.spec.ts"] } });
+
+import { vapidEnv } from "./test/vapid-fixture.js";
+export default defineConfig({ test: { env: vapidEnv, include: ["test/**/*.spec.ts"] } });
