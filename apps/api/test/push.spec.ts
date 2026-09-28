@@ -1,14 +1,27 @@
+import { buildPushPayload } from "@block65/webcrypto-web-push";
 import { children, parents } from "@ctrl-y/database";
-import { afterAll, beforeAll, beforeEach, expect, test, vi } from "vitest";
-import webPush from "web-push";
+import { afterAll, afterEach, beforeAll, beforeEach, expect, test, vi } from "vitest";
 
 import { issueToken } from "../src/auth.js";
 import { notifyReview, readVapidConfig } from "../src/push.js";
 import { secret, testApp } from "./helpers.js";
 import { vapidEnv } from "./vapid-fixture.js";
 
-vi.mock("web-push", () => ({ default: { sendNotification: vi.fn() } }));
-const send = vi.mocked(webPush.sendNotification);
+vi.mock("@block65/webcrypto-web-push", () => ({ buildPushPayload: vi.fn() }));
+const build = vi.mocked(buildPushPayload);
+const send = vi.fn<typeof fetch>();
+const payload: Awaited<ReturnType<typeof buildPushPayload>> = {
+  method: "post",
+  headers: {
+    authorization: "vapid test",
+    ttl: "2419200",
+    urgency: "normal",
+    "content-encoding": "aes128gcm",
+    "content-length": "3",
+    "content-type": "application/octet-stream",
+  },
+  body: new Uint8Array([1, 2, 3]),
+};
 const subscription = {
   endpoint: "https://push.example.test/subscription",
   keys: { p256dh: "test-browser-key", auth: "test-browser-auth" },
@@ -35,9 +48,15 @@ afterAll(async () => {
   await fixture?.client.close();
 });
 beforeEach(async () => {
+  build.mockReset();
+  build.mockResolvedValue(payload);
   send.mockReset();
-  send.mockResolvedValue({ statusCode: 201, body: "", headers: {} });
+  send.mockResolvedValue(new Response(null, { status: 201 }));
+  vi.stubGlobal("fetch", send);
   await fixture.repository.setPushSubscription(parentId, null);
+});
+afterEach(() => {
+  vi.unstubAllGlobals();
 });
 function request(path: string, method = "GET", token = parent, data?: unknown) {
   return fixture.app.request(`/api${path}`, {
@@ -131,11 +150,18 @@ test("only a successful child submission sends once, not duplicate submissions o
   expect((await submit(id, parent)).status).toBe(403);
   expect((await submit(id)).status).toBe(200);
   await vi.waitFor(() => expect(send).toHaveBeenCalledTimes(1));
-  expect(send).toHaveBeenCalledWith(
-    subscription,
-    JSON.stringify({ title: "レビュー待ち", body: "おそうじ が完了報告されました" }),
-    { vapidDetails: readVapidConfig(), timeout: 5000 },
+  expect(build).toHaveBeenCalledWith(
+    {
+      data: JSON.stringify({ title: "レビュー待ち", body: "おそうじ が完了報告されました" }),
+      options: { ttl: 2419200, urgency: "normal" },
+    },
+    { ...subscription, expirationTime: null },
+    readVapidConfig(),
   );
+  expect(send).toHaveBeenCalledWith(subscription.endpoint, {
+    ...payload,
+    signal: expect.any(AbortSignal),
+  });
   expect((await submit(id)).status).toBe(409);
   expect((await request(`/tasks/${id}/status`, "PATCH", parent, { status: "DONE" })).status).toBe(
     200,
@@ -152,7 +178,7 @@ test.each([404, 410, 429, 500])(
   "provider status %i is best-effort and only dead subscriptions are removed",
   async (statusCode) => {
     await fixture.repository.setPushSubscription(parentId, subscription);
-    send.mockRejectedValue({ statusCode });
+    send.mockResolvedValue(new Response(null, { status: statusCode }));
     expect((await submit(await task())).status).toBe(200);
     await vi.waitFor(() => expect(send).toHaveBeenCalledTimes(1));
     if (statusCode === 404 || statusCode === 410)
@@ -160,13 +186,13 @@ test.each([404, 410, 429, 500])(
     else expect(await stored()).toEqual(subscription);
   },
 );
-test("a pending push does not delay the response and its late rejection preserves a replacement", async () => {
+test("a pending push does not delay the response and its late response preserves a replacement", async () => {
   await fixture.repository.setPushSubscription(parentId, subscription);
-  let reject!: (error: unknown) => void;
+  let resolve!: (response: Response) => void;
   send.mockImplementation(
     () =>
-      new Promise((_resolve, fail) => {
-        reject = fail;
+      new Promise((done) => {
+        resolve = done;
       }),
   );
   expect((await submit(await task())).status).toBe(200);
@@ -174,11 +200,20 @@ test("a pending push does not delay the response and its late rejection preserve
   const replacement = { ...subscription, keys: { ...subscription.keys, auth: "new-auth" } };
   await fixture.repository.setPushSubscription(parentId, replacement);
   const cleanup = vi.spyOn(fixture.repository, "clearPushSubscriptionIfUnchanged");
-  reject({ statusCode: 410 });
+  resolve(new Response(null, { status: 410 }));
   await vi.waitFor(() => expect(cleanup).toHaveBeenCalledOnce());
   await cleanup.mock.results[0].value;
   expect(await stored()).toEqual(replacement);
   cleanup.mockRestore();
+});
+test("payload construction failures never reject notification work or clear the subscription", async () => {
+  await fixture.repository.setPushSubscription(parentId, subscription);
+  build.mockRejectedValueOnce(new Error("invalid key"));
+  await expect(
+    notifyReview(fixture.repository, readVapidConfig(), parentId, "task"),
+  ).resolves.toBeUndefined();
+  expect(send).not.toHaveBeenCalled();
+  expect(await stored()).toEqual(subscription);
 });
 test("network, lookup and cleanup failures never reject notification work", async () => {
   await fixture.repository.setPushSubscription(parentId, subscription);
@@ -194,7 +229,7 @@ test("network, lookup and cleanup failures never reject notification work", asyn
     notifyReview(fixture.repository, readVapidConfig(), parentId, "task"),
   ).resolves.toBeUndefined();
   lookup.mockRestore();
-  send.mockRejectedValue({ statusCode: 410 });
+  send.mockResolvedValue(new Response(null, { status: 410 }));
   const cleanup = vi
     .spyOn(fixture.repository, "clearPushSubscriptionIfUnchanged")
     .mockRejectedValueOnce(new Error("database unavailable"));
