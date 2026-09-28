@@ -280,6 +280,17 @@ test.each([
   "[ff02::1]",
   "[2001:db8::1]",
   "[2002:7f00:1::]",
+  "[2001:1ff:ffff:ffff:ffff:ffff:ffff:ffff]",
+  "[3fff:fff:ffff:ffff:ffff:ffff:ffff:ffff]",
+  "[4000::]",
+  "[::ffff:8.8.8.8]",
+  "[2606::4700::1111]",
+  "[2606:4700:4700:0:0:0:0:0:1111]",
+  "[2606:4700:4700:0:0:0:1111]",
+  "[2606:4700:4700::12345]",
+  "[2606:4700:4700::gggg]",
+  "[2606:4700:4700:0:0:0:0::1111]",
+  "[2606:4700:4700::192.0.2.999]",
   "localhost",
   "LOCALHOST.",
   "push.local",
@@ -298,11 +309,17 @@ test.each([
   ).toBe(400);
   expect(await stored()).toEqual(subscription);
 });
-test.each(["push.example.com", "8.8.8.8", "[2606:4700:4700::1111]"])(
-  "public HTTPS push host %s is accepted",
-  async (host) => {
-    const value = { ...subscription, endpoint: `https://${host}/subscription` };
-    expect((await request("/parents/push-subscription", "PUT", parent, value)).status).toBe(200);
-    expect(await stored()).toEqual(value);
-  },
-);
+test.each([
+  "push.example.com",
+  "8.8.8.8",
+  "[2606:4700:4700::1111]",
+  "[2606:4700:4700:0:0:0:0:1111]",
+  "[2606:4700:4700::192.0.2.1]",
+  "[2001:200::]",
+  "[3fff:1000::]",
+  "[3ffe:ffff:ffff:ffff:ffff:ffff:ffff:ffff]",
+])("public HTTPS push host %s is accepted", async (host) => {
+  const value = { ...subscription, endpoint: `https://${host}/subscription` };
+  expect((await request("/parents/push-subscription", "PUT", parent, value)).status).toBe(200);
+  expect(await stored()).toEqual(value);
+});
