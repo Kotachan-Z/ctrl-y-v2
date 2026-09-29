@@ -1,4 +1,4 @@
-import { StrictMode, useEffect, useState, type FormEvent, type ReactNode } from "react";
+import { StrictMode, useEffect, useRef, useState, type FormEvent, type ReactNode } from "react";
 import { createRoot } from "react-dom/client";
 import {
   BrowserRouter,
@@ -54,10 +54,12 @@ function Form({
   const [busy, setBusy] = useState(false);
   async function handle(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
+    const form = event.currentTarget;
     setBusy(true);
     setError("");
     try {
-      await submit(new FormData(event.currentTarget));
+      await submit(new FormData(form));
+      form.reset();
     } catch (e) {
       setError(e instanceof Error ? e.message : "通信に失敗しました");
     } finally {
@@ -382,6 +384,7 @@ function TaskBoard({ role, childId }: { role: Role; childId?: string }) {
   const [busy, setBusy] = useState(false);
   const [editing, setEditing] = useState<string | null>(null);
   const [version, setVersion] = useState(0);
+  const boardRef = useRef<HTMLDivElement>(null);
   const navigate = useNavigate();
   function report(e: unknown) {
     setError(e instanceof Error ? e.message : "通信に失敗しました");
@@ -436,6 +439,10 @@ function TaskBoard({ role, childId }: { role: Role; childId?: string }) {
           deadline: new Date(deadline).toISOString(),
         },
       });
+      if (!task) {
+        // Runs after the caller's form.reset(), which can itself nudge scroll position.
+        requestAnimationFrame(() => boardRef.current?.scrollTo({ top: 0 }));
+      }
       setEditing(null);
       setVersion((v) => v + 1);
     } catch (e) {
@@ -444,115 +451,124 @@ function TaskBoard({ role, childId }: { role: Role; childId?: string }) {
     }
   }
   return (
-    <div className="space-y-6 rounded-xl bg-[url('/images/mobile_note.png')] bg-size-[100%_100%] bg-center bg-no-repeat px-6 pt-16 pb-14 sm:px-10 md:bg-[url('/images/kokuban.png')] md:px-16 md:pt-12 md:pb-24">
-      {role === "parent" && (
-        <section className={`${cardClass} mx-auto max-w-2xl`}>
-          <h2 className="mb-5 text-2xl font-extrabold">タスクを追加</h2>
-          <TaskEditor save={(data) => save(data)} />
-        </section>
-      )}
-      <button
-        className={secondaryButton}
-        disabled={busy}
-        onClick={() => {
-          setError("");
-          setVersion((v) => v + 1);
-        }}
-      >
-        一覧を更新
-      </button>
-      {error && (
-        <p className="rounded-lg bg-red-50 px-4 py-3 text-red-800" role="alert">
-          {error}
-        </p>
-      )}
-      {!loaded && <p className="rounded-lg bg-gray-50/95 p-4">読み込み中…</p>}
-      {Object.entries(taskLabels).map(([status, label]) => (
-        <section key={status} aria-label={label} className="space-y-4">
-          <h2 className="inline-block rounded-lg bg-orange-100 px-5 py-2 text-xl font-extrabold shadow-sm sm:text-2xl">
-            {label}
-          </h2>
-          {loaded && !tasks.some((task) => task.status === status) && (
-            <p className="rounded-lg bg-gray-50/95 p-4 text-center text-[#5C410E]/75">
-              タスクはありません
-            </p>
-          )}
-          {tasks
-            .filter((task) => task.status === status)
-            .map((task) => (
-              <article
-                key={task.id}
-                aria-label={task.name}
-                className={`${cardClass} space-y-4 wrap-anywhere [&>button]:mr-3 [&>button]:mb-2`}
-              >
-                <h3 className="text-xl font-extrabold sm:text-2xl">{task.name}</h3>
-                <p className="whitespace-pre-wrap leading-relaxed">{task.memo}</p>
-                <p>
-                  報酬: <span className="text-xl font-bold text-green-600">{task.reward}円</span> /
-                  期限: {new Date(task.deadline).toLocaleString()}
-                </p>
-                {role === "child" && task.childId === childId && <p>あなたの担当</p>}
-                {role === "parent" ? (
-                  <>
-                    {status === "WAIT_REVIEW" && (
-                      <button
-                        className={`${buttonClass} bg-green-400 text-[#5C410E] enabled:hover:bg-green-500`}
-                        disabled={busy}
-                        onClick={() => mutate(task, "DONE")}
-                      >
-                        承認
-                      </button>
-                    )}
-                    <button
-                      className={secondaryButton}
-                      disabled={busy}
-                      onClick={() => setEditing(task.id)}
-                    >
-                      編集
-                    </button>
-                    <button className={neutralButton} disabled={busy} onClick={() => mutate(task)}>
-                      削除
-                    </button>
-                    {editing === task.id && (
+    <div className="rounded-xl bg-[url('/images/mobile_note.png')] bg-size-[100%_100%] bg-center bg-no-repeat px-6 pt-16 pb-14 sm:px-10 md:bg-[url('/images/kokuban.png')] md:px-16 md:pt-12 md:pb-24">
+      <div ref={boardRef} className="max-h-[34rem] space-y-6 overflow-y-auto pr-1 sm:max-h-[38rem]">
+        {role === "parent" && (
+          <section className={`${cardClass} mx-auto max-w-2xl`}>
+            <h2 className="mb-5 text-2xl font-extrabold">タスクを追加</h2>
+            <TaskEditor save={(data) => save(data)} />
+          </section>
+        )}
+        <button
+          className={secondaryButton}
+          disabled={busy}
+          onClick={() => {
+            setError("");
+            setVersion((v) => v + 1);
+          }}
+        >
+          一覧を更新
+        </button>
+        {error && (
+          <p className="rounded-lg bg-red-50 px-4 py-3 text-red-800" role="alert">
+            {error}
+          </p>
+        )}
+        {!loaded && <p className="rounded-lg bg-gray-50/95 p-4">読み込み中…</p>}
+        {Object.entries(taskLabels).map(([status, label]) => (
+          <section key={status} aria-label={label} className="space-y-4">
+            <h2 className="inline-block rounded-lg bg-orange-100 px-5 py-2 text-xl font-extrabold shadow-sm sm:text-2xl">
+              {label}
+            </h2>
+            {loaded && !tasks.some((task) => task.status === status) && (
+              <p className="rounded-lg bg-gray-50/95 p-4 text-center text-[#5C410E]/75">
+                タスクはありません
+              </p>
+            )}
+            <div className="space-y-4">
+              {tasks
+                .filter((task) => task.status === status)
+                .map((task) => (
+                  <article
+                    key={task.id}
+                    aria-label={task.name}
+                    className={`${cardClass} space-y-4 wrap-anywhere [&>button]:mr-3 [&>button]:mb-2`}
+                  >
+                    <h3 className="text-xl font-extrabold sm:text-2xl">{task.name}</h3>
+                    <p className="whitespace-pre-wrap leading-relaxed">{task.memo}</p>
+                    <p>
+                      報酬:{" "}
+                      <span className="text-xl font-bold text-green-600">{task.reward}円</span> /
+                      期限: {new Date(task.deadline).toLocaleString()}
+                    </p>
+                    {role === "child" && task.childId === childId && <p>あなたの担当</p>}
+                    {role === "parent" ? (
                       <>
-                        <TaskEditor task={task} save={(data) => save(data, task)} />
-                        <button className={neutralButton} onClick={() => setEditing(null)}>
-                          キャンセル
+                        {status === "WAIT_REVIEW" && (
+                          <button
+                            className={`${buttonClass} bg-green-400 text-[#5C410E] enabled:hover:bg-green-500`}
+                            disabled={busy}
+                            onClick={() => mutate(task, "DONE")}
+                          >
+                            承認
+                          </button>
+                        )}
+                        <button
+                          className={secondaryButton}
+                          disabled={busy}
+                          onClick={() => setEditing(task.id)}
+                        >
+                          編集
                         </button>
+                        <button
+                          className={neutralButton}
+                          disabled={busy}
+                          onClick={() => mutate(task)}
+                        >
+                          削除
+                        </button>
+                        {editing === task.id && (
+                          <>
+                            <TaskEditor task={task} save={(data) => save(data, task)} />
+                            <button className={neutralButton} onClick={() => setEditing(null)}>
+                              キャンセル
+                            </button>
+                          </>
+                        )}
+                      </>
+                    ) : (
+                      <>
+                        {status === "TODO" && task.childId === null && (
+                          <button
+                            className={primaryButton}
+                            disabled={busy}
+                            onClick={() => mutate(task, "IN_PROGRESS")}
+                          >
+                            はじめる
+                          </button>
+                        )}
+                        {status === "IN_PROGRESS" && task.childId === childId && (
+                          <button
+                            className={primaryButton}
+                            disabled={busy}
+                            onClick={() => mutate(task, "WAIT_REVIEW")}
+                          >
+                            できた!
+                          </button>
+                        )}
+                        {status === "WAIT_REVIEW" && (
+                          <button className={neutralButton} disabled>
+                            まってね
+                          </button>
+                        )}
                       </>
                     )}
-                  </>
-                ) : (
-                  <>
-                    {status === "TODO" && task.childId === null && (
-                      <button
-                        className={primaryButton}
-                        disabled={busy}
-                        onClick={() => mutate(task, "IN_PROGRESS")}
-                      >
-                        はじめる
-                      </button>
-                    )}
-                    {status === "IN_PROGRESS" && task.childId === childId && (
-                      <button
-                        className={primaryButton}
-                        disabled={busy}
-                        onClick={() => mutate(task, "WAIT_REVIEW")}
-                      >
-                        できた!
-                      </button>
-                    )}
-                    {status === "WAIT_REVIEW" && (
-                      <button className={neutralButton} disabled>
-                        まってね
-                      </button>
-                    )}
-                  </>
-                )}
-              </article>
-            ))}
-        </section>
-      ))}
+                  </article>
+                ))}
+            </div>
+          </section>
+        ))}
+      </div>
     </div>
   );
 }
