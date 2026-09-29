@@ -124,7 +124,7 @@ function ParentLogin({ signup = false }: { signup?: boolean }) {
       >
         <Field name="email" label="メールアドレス" type="email" maxLength={254} />
         <Field name="password" label="パスワード" type="password" minLength={8} />
-        <p>パスワードは8文字以上、UTF-8で72バイト以内です。</p>
+        <p>パスワードは8文字以上です。</p>
       </Form>
       <Link className={linkClass} to={signup ? "/" : "/signup"}>
         {signup ? "ログインへ" : "新規登録へ"}
@@ -187,7 +187,7 @@ function Setup() {
       >
         <Field name="name" label="子供の名前" maxLength={50} />
         <Field name="keyword" label="あいことば" type="password" minLength={4} />
-        <p>家族の子供全員で共有します。4文字以上、UTF-8で72バイト以内です。</p>
+        <p>家族の子供全員で共有します。4文字以上です。</p>
       </Form>
       <Link className={linkClass} to="/children">
         子供一覧へ
