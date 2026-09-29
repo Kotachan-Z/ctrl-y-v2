@@ -15,6 +15,32 @@ import { registerServiceWorker, urlBase64ToUint8Array } from "./push";
 
 import "./style.css";
 
+const buttonClass =
+  "inline-flex min-h-11 items-center justify-center rounded-lg px-5 py-2.5 font-bold shadow-sm transition-colors duration-300 focus-visible:outline-2 focus-visible:outline-offset-4 focus-visible:outline-blue-600 disabled:cursor-not-allowed disabled:opacity-50 enabled:cursor-pointer";
+const primaryButton = `${buttonClass} bg-blue-500 text-white enabled:hover:bg-blue-600`;
+const secondaryButton = `${buttonClass} bg-orange-300 text-[#5C410E] enabled:hover:bg-orange-400`;
+const neutralButton = `${buttonClass} bg-gray-200 text-[#5C410E] enabled:hover:bg-gray-300`;
+const inputClass =
+  "min-w-0 w-full rounded-lg border border-[#5C410E]/30 bg-gray-100 px-4 py-3 text-base font-normal text-gray-900 outline-none transition-shadow focus:border-blue-500 focus:ring-2 focus:ring-blue-500/30";
+const linkClass =
+  "inline-block rounded-sm font-medium text-blue-700 underline underline-offset-4 transition-colors hover:text-blue-500 focus-visible:outline-2 focus-visible:outline-offset-4";
+const cardClass = "rounded-lg border border-[#5C410E]/15 bg-gray-50 p-5 shadow-lg sm:p-7";
+
+function AuthLayout({ children }: { children: ReactNode }) {
+  return (
+    <div className="mx-auto flex min-h-[calc(100svh-5rem)] w-full max-w-xl flex-col justify-center gap-6 py-8 sm:gap-8 [&>h1]:text-center [&>h1]:text-3xl [&>h1]:font-extrabold sm:[&>h1]:text-4xl [&>h2]:text-2xl [&>h2]:font-bold [&>a]:self-center">
+      <img
+        src="/images/180icon.png"
+        alt="ご褒美ポケットのマスコット"
+        width="180"
+        height="180"
+        className="mx-auto h-32 w-32 object-contain sm:h-40 sm:w-40"
+      />
+      {children}
+    </div>
+  );
+}
+
 function Form({
   children,
   submit,
@@ -39,10 +65,16 @@ function Form({
     }
   }
   return (
-    <form onSubmit={handle}>
+    <form onSubmit={handle} className="grid min-w-0 gap-5 [&>p]:text-sm [&>p]:leading-relaxed">
       {children}
-      {error && <p role="alert">{error}</p>}
-      <button disabled={busy}>{busy ? "送信中…" : label}</button>
+      {error && (
+        <p className="rounded-lg bg-red-50 px-4 py-3 text-red-800" role="alert">
+          {error}
+        </p>
+      )}
+      <button className={`${primaryButton} mx-auto mt-2 min-w-44`} disabled={busy}>
+        {busy ? "送信中…" : label}
+      </button>
     </form>
   );
 }
@@ -60,9 +92,10 @@ function Field({
   maxLength?: number;
 }) {
   return (
-    <label>
+    <label className="grid min-w-0 gap-2 font-semibold">
       {label}
       <input
+        className={inputClass}
         name={name}
         type={type}
         required
@@ -76,7 +109,7 @@ function Field({
 function ParentLogin({ signup = false }: { signup?: boolean }) {
   const navigate = useNavigate();
   return (
-    <>
+    <AuthLayout>
       <h1>{signup ? "親アカウント登録" : "親ログイン"}</h1>
       <Form
         label={signup ? "登録する" : "ログイン"}
@@ -93,8 +126,10 @@ function ParentLogin({ signup = false }: { signup?: boolean }) {
         <Field name="password" label="パスワード" type="password" minLength={8} />
         <p>パスワードは8文字以上、UTF-8で72バイト以内です。</p>
       </Form>
-      <Link to={signup ? "/" : "/signup"}>{signup ? "ログインへ" : "新規登録へ"}</Link>
-    </>
+      <Link className={linkClass} to={signup ? "/" : "/signup"}>
+        {signup ? "ログインへ" : "新規登録へ"}
+      </Link>
+    </AuthLayout>
   );
 }
 function Guard({ role, children }: { role: Role; children: ReactNode }) {
@@ -126,7 +161,11 @@ function Guard({ role, children }: { role: Role; children: ReactNode }) {
   }, [role, childId, token]);
   if (status === "loading") return <p>確認中…</p>;
   if (status === "error")
-    return <p role="alert">接続できません。時間をおいて再読み込みしてください。</p>;
+    return (
+      <p className="rounded-lg bg-red-50 px-4 py-3 text-red-800" role="alert">
+        接続できません。時間をおいて再読み込みしてください。
+      </p>
+    );
   if (status === "denied")
     return <Navigate to={role === "parent" ? "/" : `/child/login/${childId}`} replace />;
   return children;
@@ -134,7 +173,7 @@ function Guard({ role, children }: { role: Role; children: ReactNode }) {
 function Setup() {
   const navigate = useNavigate();
   return (
-    <>
+    <AuthLayout>
       <h1>初回セットアップ</h1>
       <Form
         label="子供を作成する"
@@ -150,8 +189,10 @@ function Setup() {
         <Field name="keyword" label="あいことば" type="password" minLength={4} />
         <p>家族の子供全員で共有します。4文字以上、UTF-8で72バイト以内です。</p>
       </Form>
-      <Link to="/children">子供一覧へ</Link>
-    </>
+      <Link className={linkClass} to="/children">
+        子供一覧へ
+      </Link>
+    </AuthLayout>
   );
 }
 function Children() {
@@ -178,17 +219,24 @@ function Children() {
     };
   }, [navigate]);
   return (
-    <>
+    <AuthLayout>
       <h1>子供のログインURL</h1>
       <p>URLとあいことばを子供に共有してください。</p>
-      {message && <p role="status">{message}</p>}
+      {message && (
+        <p className="rounded-lg bg-blue-50 px-4 py-3 text-blue-900" role="status">
+          {message}
+        </p>
+      )}
       {children.map((child) => {
         const url = `${window.location.origin}/child/login/${child.id}`;
         return (
-          <section key={child.id}>
-            <h2>{child.name}</h2>
-            <a href={url}>{url}</a>
+          <section key={child.id} className={`${cardClass} grid gap-4 sm:grid-cols-[1fr_auto]`}>
+            <h2 className="text-xl font-bold sm:col-span-2">{child.name}</h2>
+            <a className={`${inputClass} ${linkClass} self-center wrap-anywhere`} href={url}>
+              {url}
+            </a>
             <button
+              className={secondaryButton}
               onClick={async () => {
                 try {
                   await navigator.clipboard.writeText(url);
@@ -221,17 +269,21 @@ function Children() {
             </Form>
           </>
         ) : (
-          <Link to="/setup">初回セットアップへ</Link>
+          <Link className={linkClass} to="/setup">
+            初回セットアップへ
+          </Link>
         ))}
-      <Link to="/top">親のトップへ</Link>
-    </>
+      <Link className={linkClass} to="/top">
+        親のトップへ
+      </Link>
+    </AuthLayout>
   );
 }
 function ChildLogin() {
   const { childId } = useParams();
   const navigate = useNavigate();
   return (
-    <>
+    <AuthLayout>
       <h1>子供ログイン</h1>
       <Form
         label="ログイン"
@@ -245,8 +297,10 @@ function ChildLogin() {
       >
         <Field name="keyword" label="あいことば" type="password" minLength={4} />
       </Form>
-      <Link to="/">親ログインへ</Link>
-    </>
+      <Link className={linkClass} to="/">
+        親ログインへ
+      </Link>
+    </AuthLayout>
   );
 }
 type Task = {
@@ -273,32 +327,52 @@ function TaskEditor({ task, save }: { task?: Task; save: (data: FormData) => Pro
         .slice(0, 16)
     : "";
   return (
-    <Form label={task ? "保存する" : "タスクを作成"} submit={save}>
-      <label>
-        タスク名
-        <input name="name" required maxLength={100} defaultValue={task?.name} />
-      </label>
-      <label>
-        メモ
-        <textarea name="memo" maxLength={2000} defaultValue={task?.memo ?? ""} />
-      </label>
-      <label>
-        報酬（円）
-        <input
-          name="reward"
-          type="number"
-          required
-          min={0}
-          max={1000000}
-          step={1}
-          defaultValue={task?.reward ?? 0}
-        />
-      </label>
-      <label>
-        期限
-        <input name="deadline" type="datetime-local" required defaultValue={localDeadline} />
-      </label>
-    </Form>
+    <div className="[&>form>button]:bg-orange-300 [&>form>button]:text-[#5C410E] [&>form>button:enabled:hover]:bg-orange-400">
+      <Form label={task ? "保存する" : "タスクを作成"} submit={save}>
+        <label className="grid min-w-0 gap-2 font-semibold">
+          タスク名
+          <input
+            className={inputClass}
+            name="name"
+            required
+            maxLength={100}
+            defaultValue={task?.name}
+          />
+        </label>
+        <label className="grid min-w-0 gap-2 font-semibold">
+          メモ
+          <textarea
+            className={`${inputClass} min-h-24 resize-y`}
+            name="memo"
+            maxLength={2000}
+            defaultValue={task?.memo ?? ""}
+          />
+        </label>
+        <label className="grid min-w-0 gap-2 font-semibold">
+          報酬（円）
+          <input
+            className={inputClass}
+            name="reward"
+            type="number"
+            required
+            min={0}
+            max={1000000}
+            step={1}
+            defaultValue={task?.reward ?? 0}
+          />
+        </label>
+        <label className="grid min-w-0 gap-2 font-semibold">
+          期限
+          <input
+            className={inputClass}
+            name="deadline"
+            type="datetime-local"
+            required
+            defaultValue={localDeadline}
+          />
+        </label>
+      </Form>
+    </div>
   );
 }
 function TaskBoard({ role, childId }: { role: Role; childId?: string }) {
@@ -370,14 +444,15 @@ function TaskBoard({ role, childId }: { role: Role; childId?: string }) {
     }
   }
   return (
-    <>
+    <div className="space-y-6 rounded-xl bg-[url('/images/mobile_note.png')] bg-size-[100%_100%] bg-center bg-no-repeat px-6 pt-16 pb-14 sm:px-10 md:bg-[url('/images/kokuban.png')] md:px-16 md:pt-12 md:pb-24">
       {role === "parent" && (
-        <section>
-          <h2>タスクを追加</h2>
+        <section className={`${cardClass} mx-auto max-w-2xl`}>
+          <h2 className="mb-5 text-2xl font-extrabold">タスクを追加</h2>
           <TaskEditor save={(data) => save(data)} />
         </section>
       )}
       <button
+        className={secondaryButton}
         disabled={busy}
         onClick={() => {
           setError("");
@@ -386,62 +461,99 @@ function TaskBoard({ role, childId }: { role: Role; childId?: string }) {
       >
         一覧を更新
       </button>
-      {error && <p role="alert">{error}</p>}
-      {!loaded && <p>読み込み中…</p>}
+      {error && (
+        <p className="rounded-lg bg-red-50 px-4 py-3 text-red-800" role="alert">
+          {error}
+        </p>
+      )}
+      {!loaded && <p className="rounded-lg bg-gray-50/95 p-4">読み込み中…</p>}
       {Object.entries(taskLabels).map(([status, label]) => (
-        <section key={status} aria-label={label}>
-          <h2>{label}</h2>
-          {loaded && !tasks.some((task) => task.status === status) && <p>タスクはありません</p>}
+        <section key={status} aria-label={label} className="space-y-4">
+          <h2 className="inline-block rounded-lg bg-orange-100 px-5 py-2 text-xl font-extrabold shadow-sm sm:text-2xl">
+            {label}
+          </h2>
+          {loaded && !tasks.some((task) => task.status === status) && (
+            <p className="rounded-lg bg-gray-50/95 p-4 text-center text-[#5C410E]/75">
+              タスクはありません
+            </p>
+          )}
           {tasks
             .filter((task) => task.status === status)
             .map((task) => (
-              <article key={task.id} aria-label={task.name}>
-                <h3>{task.name}</h3>
-                <p>{task.memo}</p>
+              <article
+                key={task.id}
+                aria-label={task.name}
+                className={`${cardClass} space-y-4 wrap-anywhere [&>button]:mr-3 [&>button]:mb-2`}
+              >
+                <h3 className="text-xl font-extrabold sm:text-2xl">{task.name}</h3>
+                <p className="whitespace-pre-wrap leading-relaxed">{task.memo}</p>
                 <p>
-                  報酬: {task.reward}円 / 期限: {new Date(task.deadline).toLocaleString()}
+                  報酬: <span className="text-xl font-bold text-green-600">{task.reward}円</span> /
+                  期限: {new Date(task.deadline).toLocaleString()}
                 </p>
                 {role === "child" && task.childId === childId && <p>あなたの担当</p>}
                 {role === "parent" ? (
                   <>
                     {status === "WAIT_REVIEW" && (
-                      <button disabled={busy} onClick={() => mutate(task, "DONE")}>
+                      <button
+                        className={`${buttonClass} bg-green-400 text-[#5C410E] enabled:hover:bg-green-500`}
+                        disabled={busy}
+                        onClick={() => mutate(task, "DONE")}
+                      >
                         承認
                       </button>
                     )}
-                    <button disabled={busy} onClick={() => setEditing(task.id)}>
+                    <button
+                      className={secondaryButton}
+                      disabled={busy}
+                      onClick={() => setEditing(task.id)}
+                    >
                       編集
                     </button>
-                    <button disabled={busy} onClick={() => mutate(task)}>
+                    <button className={neutralButton} disabled={busy} onClick={() => mutate(task)}>
                       削除
                     </button>
                     {editing === task.id && (
                       <>
                         <TaskEditor task={task} save={(data) => save(data, task)} />
-                        <button onClick={() => setEditing(null)}>キャンセル</button>
+                        <button className={neutralButton} onClick={() => setEditing(null)}>
+                          キャンセル
+                        </button>
                       </>
                     )}
                   </>
                 ) : (
                   <>
                     {status === "TODO" && task.childId === null && (
-                      <button disabled={busy} onClick={() => mutate(task, "IN_PROGRESS")}>
+                      <button
+                        className={primaryButton}
+                        disabled={busy}
+                        onClick={() => mutate(task, "IN_PROGRESS")}
+                      >
                         はじめる
                       </button>
                     )}
                     {status === "IN_PROGRESS" && task.childId === childId && (
-                      <button disabled={busy} onClick={() => mutate(task, "WAIT_REVIEW")}>
+                      <button
+                        className={primaryButton}
+                        disabled={busy}
+                        onClick={() => mutate(task, "WAIT_REVIEW")}
+                      >
                         できた!
                       </button>
                     )}
-                    {status === "WAIT_REVIEW" && <button disabled>まってね</button>}
+                    {status === "WAIT_REVIEW" && (
+                      <button className={neutralButton} disabled>
+                        まってね
+                      </button>
+                    )}
                   </>
                 )}
               </article>
             ))}
         </section>
       ))}
-    </>
+    </div>
   );
 }
 
@@ -512,12 +624,16 @@ function PushNotifications() {
     }
   }
   return (
-    <section>
-      <h2>通知</h2>
-      <button disabled={!supported || busy} onClick={toggle}>
+    <section className={`${cardClass} space-y-4`}>
+      <h2 className="text-xl font-bold">通知</h2>
+      <button className={primaryButton} disabled={!supported || busy} onClick={toggle}>
         {busy ? "確認中…" : enabled ? "通知を無効にする" : "通知を有効にする"}
       </button>
-      {message && <p role="status">{message}</p>}
+      {message && (
+        <p className="rounded-lg bg-blue-50 px-4 py-3 text-blue-900" role="status">
+          {message}
+        </p>
+      )}
     </section>
   );
 }
@@ -526,12 +642,21 @@ function Top({ role }: { role: Role }) {
   const navigate = useNavigate();
   const { childId } = useParams();
   return (
-    <>
-      <h1>{role === "parent" ? "親のトップ" : "子供のトップ"}</h1>
+    <div className="mx-auto max-w-6xl space-y-6 py-6 sm:py-10">
+      <h1 className="text-center text-3xl font-extrabold sm:text-4xl">
+        {role === "parent" ? "親のトップ" : "子供のトップ"}
+      </h1>
       {role === "parent" && <PushNotifications />}
       <TaskBoard role={role} childId={childId} />
-      {role === "parent" && <Link to="/children">子供のログインURL・追加</Link>}
+      {role === "parent" && (
+        <div className={cardClass}>
+          <Link className={linkClass} to="/children">
+            子供のログインURL・追加
+          </Link>
+        </div>
+      )}
       <button
+        className={neutralButton}
         onClick={() => {
           tokens.remove(role);
           void navigate(role === "parent" ? "/" : `/child/login/${childId}`, { replace: true });
@@ -539,13 +664,13 @@ function Top({ role }: { role: Role }) {
       >
         ログアウト
       </button>
-    </>
+    </div>
   );
 }
 function App() {
   return (
-    <main>
-      <p>Ctrl-Y v2 · ご褒美ポケット</p>
+    <main className="min-h-svh bg-[#FFF877] bg-[url('/images/back2.png')] bg-cover bg-fixed bg-center bg-no-repeat px-4 pt-[max(1rem,env(safe-area-inset-top))] pb-[max(1rem,env(safe-area-inset-bottom))] font-sans text-[#5C410E] md:bg-[url('/images/back.png')] sm:px-8">
+      <p className="text-center text-sm font-bold tracking-wide">Ctrl-Y v2 · ご褒美ポケット</p>
       <Routes>
         <Route path="/" element={<ParentLogin />} />
         <Route path="/signup" element={<ParentLogin signup />} />
@@ -585,10 +710,12 @@ function App() {
         <Route
           path="*"
           element={
-            <>
+            <AuthLayout>
               <h1>ページが見つかりません</h1>
-              <Link to="/">親ログインへ</Link>
-            </>
+              <Link className={linkClass} to="/">
+                親ログインへ
+              </Link>
+            </AuthLayout>
           }
         />
       </Routes>
