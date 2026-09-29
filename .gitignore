@@ -4,9 +4,8 @@ dist/
 .pglite/
 .env*
 !.env.example
-.firebase/
-*service-account*.json
-*-firebase-adminsdk-*.json
+.wrangler/
+.dev.vars*
 *-debug.log
 playwright-report/
 test-results/

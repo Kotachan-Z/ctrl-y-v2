@@ -1,4 +1,4 @@
-import webPush from "web-push";
+import { buildPushPayload, type PushMessage } from "@block65/webcrypto-web-push";
 
 import type { AuthRepository, PushSubscription } from "./repository.js";
 
@@ -54,22 +54,30 @@ export async function notifyReview(
   try {
     subscription = (await repository.parentById(parentId))?.pushSubscription;
     if (!subscription) return;
-    await webPush.sendNotification(
-      subscription,
-      JSON.stringify({ title: "レビュー待ち", body: `${taskName} が完了報告されました` }),
-      { vapidDetails: vapid, timeout: 5000 },
+    const message: PushMessage = {
+      data: JSON.stringify({ title: "レビュー待ち", body: `${taskName} が完了報告されました` }),
+      // Preserve web-push's default four-week TTL and normal urgency.
+      options: { ttl: 2419200, urgency: "normal" },
+    };
+    const payload = await buildPushPayload(
+      message,
+      { ...subscription, expirationTime: null },
+      vapid,
     );
-  } catch (error) {
-    const status =
-      error !== null && typeof error === "object" && "statusCode" in error
-        ? error.statusCode
-        : undefined;
-    if (subscription && (status === 410 || status === 404)) {
+    const response = await fetch(subscription.endpoint, {
+      ...payload,
+      redirect: "manual",
+      signal: AbortSignal.timeout(5000),
+    });
+    if (response.ok) return;
+    if (response.status === 410 || response.status === 404) {
       try {
         await repository.clearPushSubscriptionIfUnchanged(parentId, subscription);
       } catch {
         console.warn("Push subscription cleanup failed");
       }
-    } else console.warn("Push delivery failed", typeof status === "number" ? status : "unknown");
+    } else console.warn("Push delivery failed", response.status);
+  } catch {
+    console.warn("Push delivery failed", "unknown");
   }
 }

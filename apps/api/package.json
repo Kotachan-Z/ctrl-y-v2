@@ -3,25 +3,25 @@
   "version": "0.0.0",
   "private": true,
   "type": "module",
-  "main": "dist/functions.js",
   "scripts": {
     "dev": "bun --hot src/entry.ts",
-    "build": "bun scripts/build.ts",
-    "type-check": "tsc --noEmit",
-    "test": "vitest run"
+    "build": "wrangler deploy --dry-run --config ../../wrangler.toml",
+    "type-check": "tsc --noEmit -p tsconfig.node.json && tsc --noEmit -p tsconfig.worker.json",
+    "test": "vitest run",
+    "dev:workers": "wrangler dev --config ../../wrangler.toml",
+    "deploy": "wrangler deploy --config ../../wrangler.toml"
   },
   "dependencies": {
+    "@block65/webcrypto-web-push": "2.0.0",
     "@ctrl-y/database": "workspace:*",
-    "@hono/node-server": "1.19.9",
     "bcryptjs": "3.0.3",
     "drizzle-orm": "0.45.2",
-    "firebase-functions": "7.2.2",
-    "hono": "4.12.10",
-    "web-push": "3.6.7"
+    "hono": "4.12.10"
   },
   "devDependencies": {
-    "@types/web-push": "3.6.4",
-    "vitest": "4.1.5"
+    "@cloudflare/workers-types": "^4.0.0",
+    "vitest": "4.1.5",
+    "wrangler": "^4.0.0"
   },
   "engines": {
     "node": "22"

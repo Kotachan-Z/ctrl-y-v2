@@ -1,4 +1,13 @@
 const CACHE_NAME = "ctrl-y-static-v1";
+const PUBLIC_ASSETS = [
+  "/icon.svg",
+  "/manifest.webmanifest",
+  "/images/180icon.png",
+  "/images/back.png",
+  "/images/back2.png",
+  "/images/kokuban.png",
+  "/images/mobile_note.png",
+];
 
 self.addEventListener("install", (event) => {
   event.waitUntil(
@@ -11,7 +20,7 @@ self.addEventListener("install", (event) => {
       const assets = [...html.matchAll(/(?:src|href)="(\/assets\/[^"?#]+)"/g)].map(
         (match) => match[1],
       );
-      await cache.addAll([...new Set(["/icon.svg", "/manifest.webmanifest", ...assets])]);
+      await cache.addAll([...new Set([...PUBLIC_ASSETS, ...assets])]);
       await cache.put("/", shell);
       await self.skipWaiting();
     })(),
@@ -42,7 +51,7 @@ self.addEventListener("fetch", (event) => {
     return;
   const navigation = request.mode === "navigate";
   const asset = url.pathname.startsWith("/assets/");
-  const metadata = ["/icon.svg", "/manifest.webmanifest"].includes(url.pathname);
+  const metadata = PUBLIC_ASSETS.includes(url.pathname);
   if (!navigation && !asset && !metadata) return;
   event.respondWith(
     (async () => {

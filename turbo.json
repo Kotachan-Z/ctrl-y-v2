@@ -24,6 +24,11 @@
     "test": {
       "dependsOn": ["^build"],
       "outputs": []
+    },
+    "@ctrl-y/api#build": {
+      "dependsOn": ["^build", "@ctrl-y/web#build"],
+      "cache": false,
+      "outputs": []
     }
   }
 }
