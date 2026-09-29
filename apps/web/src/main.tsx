@@ -640,16 +640,38 @@ function PushNotifications() {
     }
   }
   return (
-    <section className={`${cardClass} space-y-4`}>
-      <h2 className="text-xl font-bold">通知</h2>
-      <button className={primaryButton} disabled={!supported || busy} onClick={toggle}>
-        {busy ? "確認中…" : enabled ? "通知を無効にする" : "通知を有効にする"}
-      </button>
-      {message && (
-        <p className="rounded-lg bg-blue-50 px-4 py-3 text-blue-900" role="status">
-          {message}
-        </p>
-      )}
+    <section
+      className={`${cardClass} flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between`}
+    >
+      <div className="flex items-center gap-4">
+        <img
+          src="/images/icon-notice.png"
+          alt=""
+          width="48"
+          height="48"
+          className="h-11 w-11 shrink-0 object-contain sm:h-12 sm:w-12"
+        />
+        <div>
+          <h2 className="text-xl font-bold">通知</h2>
+          <p className="text-sm text-[#5C410E]/70">
+            お子様がタスクを完了報告したときにお知らせします
+          </p>
+        </div>
+      </div>
+      <div className="flex flex-col items-start gap-2 sm:items-end">
+        <button
+          className={enabled ? neutralButton : primaryButton}
+          disabled={!supported || busy}
+          onClick={toggle}
+        >
+          {busy ? "確認中…" : enabled ? "通知を無効にする" : "通知を有効にする"}
+        </button>
+        {message && (
+          <p className="rounded-lg bg-blue-50 px-4 py-3 text-sm text-blue-900" role="status">
+            {message}
+          </p>
+        )}
+      </div>
     </section>
   );
 }
@@ -665,11 +687,22 @@ function Top({ role }: { role: Role }) {
       {role === "parent" && <PushNotifications />}
       <TaskBoard role={role} childId={childId} />
       {role === "parent" && (
-        <div className={cardClass}>
-          <Link className={linkClass} to="/children">
-            子供のログインURL・追加
-          </Link>
-        </div>
+        <Link
+          to="/children"
+          className={`${cardClass} flex items-center gap-4 transition-shadow hover:shadow-xl`}
+        >
+          <img
+            src="/images/icon-children.png"
+            alt=""
+            width="48"
+            height="48"
+            className="h-11 w-11 shrink-0 object-contain sm:h-12 sm:w-12"
+          />
+          <div>
+            <h2 className="text-xl font-bold">子供のログインURL</h2>
+            <p className="text-sm text-[#5C410E]/70">共有・追加はこちらから</p>
+          </div>
+        </Link>
       )}
       <button
         className={neutralButton}
