@@ -99,6 +99,7 @@ Worker・CIのbundle検証・手動デプロイworkflowは実装済みです。�
 - `bun run build` はWebビルド完了後にWorkersのdry-runを実行し、CIでも同じbundleを検証します。初回設定後はルートで `bun run build` → `bun run deploy`、またはActionsの「Cloudflare deploy」を手動実行します。Workers Paid を前提とし、bcryptjs cost 12 は維持します。
 - デプロイ前に人手で `bunx wrangler login`、`bunx wrangler hyperdrive create ctrl-y-v2 --connection-string=<supabase-connection-string> --caching-disabled` を実行し、設定の仮 ID を置換してください。Cloudflare / Supabase のアカウントと、本番 DB への既存 migration 適用が必要です（この経路は migration を自動適用しません）。
 - `bunx wrangler secret put <名前>` で `JWT_SECRET`（32 バイト以上）、`VAPID_PUBLIC_KEY`、`VAPID_PRIVATE_KEY`、`VAPID_SUBJECT` を登録してください。
+- 本番 migration はルートで `PRODUCTION_DATABASE_URL='<Supabase の直接接続文字列>' bun run --filter @ctrl-y/database migration:production` を手動実行します。ローカル CLI から Hyperdrive を経由せず、既存の `packages/database/migrations` を適用します。接続文字列は必須で、未設定・空文字の場合は drizzle-kit がエラー終了します。CI・デプロイでは自動適用しません。
 - ローカル Workers 検証は `bun run build` 後に `bun run dev:workers`。ルートの `.dev.vars` に同じ秘密値を設定し、`CLOUDFLARE_HYPERDRIVE_LOCAL_CONNECTION_STRING_HYPERDRIVE` に検証用 PostgreSQL 接続文字列を指定します。PGLite への fallback はありません。
 
 ## Phase 2a 認証
