@@ -27,7 +27,7 @@ Terraform、Docker、Next.js は使用しません。
 - `ci.yml`: lint・整形・型検査・テスト・ビルド・DB検証・Playwrightを実行。両ジョブで `bun.lock` をキーにBunのダウンロードキャッシュを共有し、frozen installを行います。ジョブの権限は `contents: read` のみです。
 - `codeql.yml`: mainへのpush・PRと週次スケジュールでJavaScript/TypeScriptを解析します。解析ジョブにのみ `security-events: write`、`contents: read`、`actions: read` を付与します。
 - `dependabot.yml`: npm（ルート・各workspace）とGitHub Actionsの更新PRを毎週作成します。
-- `deploy.yml`: Actionsの「Cloudflare deploy」から手動実行のみ（workflow_dispatch）。リポジトリSecretsの `CLOUDFLARE_API_TOKEN`・`CLOUDFLARE_ACCOUNT_ID` を事前確認し、未設定時は停止します。Bunのfrozen install → Webビルド → WranglerでWorker・静的アセットをデプロイします。権限は `contents: read` のみです。
+- `deploy.yml`: mainへのpush、またはActionsの「Cloudflare deploy」から手動実行（workflow_dispatch）。リポジトリSecretsの `CLOUDFLARE_API_TOKEN`・`CLOUDFLARE_ACCOUNT_ID` を事前確認し、未設定時は停止します。Bunのfrozen install → Webビルド → WranglerでWorker・静的アセットをデプロイします。権限は `contents: read` のみです。
 
 ## セットアップ
 
