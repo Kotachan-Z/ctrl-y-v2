@@ -2,6 +2,8 @@ name = "ctrl-y-v2"
 main = "apps/api/src/worker.ts"
 compatibility_date = "2026-09-28"
 compatibility_flags = ["nodejs_compat"]
+# Explicitly ensure the workers.dev URL is enabled on every deploy.
+workers_dev = true
 
 [assets]
 directory = "./apps/web/dist"
