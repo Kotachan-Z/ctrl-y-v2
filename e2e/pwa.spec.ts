@@ -96,7 +96,7 @@ test("parent can enable and disable notifications with a mocked push service", a
       });
     await route.fulfill({ json: { ok: true } });
   });
-  await page.goto("/top");
+  await page.goto("/settings/notifications");
   await page.getByRole("button", { name: "通知を有効にする" }).click();
   await expect(page.getByRole("status")).toHaveText("通知を有効にしました");
   await page.getByRole("button", { name: "通知を無効にする" }).click();
