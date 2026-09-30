@@ -81,7 +81,6 @@ test("parent can enable and disable notifications with a mocked push service", a
   await page.route("**/api/session", (route) =>
     route.fulfill({ json: { identity: { role: "parent", id: "parent" } } }),
   );
-  await page.route("**/api/tasks", (route) => route.fulfill({ json: { tasks: [] } }));
   await page.route("**/api/push/public-key", (route) =>
     route.fulfill({ json: { publicKey: "-_8A" } }),
   );
