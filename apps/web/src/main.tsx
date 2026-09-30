@@ -1006,7 +1006,6 @@ function Top({ role }: { role: Role }) {
       <h1 className="text-center text-3xl font-extrabold sm:text-4xl">
         {role === "parent" ? "親のトップ" : "子供のトップ"}
       </h1>
-      {role === "parent" && <PushNotifications />}
       <TaskBoard role={role} childId={childId} />
       {role === "parent" && (
         <div className="grid gap-4 sm:grid-cols-2">
@@ -1053,9 +1052,26 @@ function SettingsHub() {
           title="給与設定"
           description="給料日・締め日を変更"
         />
+        <LinkCard
+          to="/settings/notifications"
+          icon="/images/icon-notice.png"
+          title="通知設定"
+          description="タスク完了通知のON/OFFを切り替え"
+        />
       </div>
       <Link className={linkClass} to="/top">
         親のトップへ
+      </Link>
+    </div>
+  );
+}
+function NotificationSettings() {
+  return (
+    <div className="mx-auto max-w-xl space-y-6 py-6 sm:py-10">
+      <h1 className="text-center text-3xl font-extrabold sm:text-4xl">通知設定</h1>
+      <PushNotifications />
+      <Link className={linkClass} to="/settings">
+        設定へ戻る
       </Link>
     </div>
   );
@@ -1112,6 +1128,14 @@ function App() {
           element={
             <Guard role="parent">
               <SalarySettings />
+            </Guard>
+          }
+        />
+        <Route
+          path="/settings/notifications"
+          element={
+            <Guard role="parent">
+              <NotificationSettings />
             </Guard>
           }
         />
