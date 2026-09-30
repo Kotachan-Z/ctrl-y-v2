@@ -757,12 +757,14 @@ function SalaryRecords() {
         }
       })
       .catch((e: unknown) => {
-        if (active) setMessage(e instanceof Error ? e.message : "通信に失敗しました");
+        if (!active) return;
+        if (e instanceof ApiError && e.status === 401) void navigate("/", { replace: true });
+        else setMessage(e instanceof Error ? e.message : "通信に失敗しました");
       });
     return () => {
       active = false;
     };
-  }, [selectedChild]);
+  }, [selectedChild, navigate]);
   const years = useMemo(() => {
     const set = new Set(rows.map((row) => Number(row.month.slice(0, 4))));
     set.add(new Date().getFullYear());
