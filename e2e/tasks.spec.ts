@@ -14,6 +14,7 @@ test("parent creates and edits; child starts and submits; parent approves and de
   await expect(link).toBeVisible();
   const childUrl = await link.getAttribute("href");
   await page.getByRole("link", { name: "親のトップへ" }).click();
+  await page.getByRole("tab", { name: "タスクを追加" }).click();
   await page.getByLabel("タスク名").fill("玄関そうじ");
   await page.getByLabel("メモ").fill("くつをそろえる");
   await page.getByLabel("報酬（円）").fill("100");
