@@ -6,7 +6,7 @@ import { HTTPException } from "hono/http-exception";
 import { authenticate, familyId, isUuid, issueToken, parentOnly, type AuthEnv } from "./auth.js";
 import { notifyReview, readVapidConfig, validateVapidConfig, type VapidConfig } from "./push.js";
 import { createFailureLimiter } from "./rate-limit.js";
-import type { AuthRepository, TaskFields, TaskStatus } from "./repository.js";
+import type { AuthRepository, PayrollSettings, TaskFields, TaskStatus } from "./repository.js";
 
 function isIP(address: string): 4 | 6 | 0 {
   if (!address.includes(":")) {
@@ -145,6 +145,25 @@ function childName(value: unknown) {
   )
     throw new HTTPException(400, { message: "名前は1〜50文字にしてください" });
   return value.trim();
+}
+function payrollSettingsFields(data: Record<string, unknown>): Partial<PayrollSettings> {
+  if (
+    !Object.keys(data).length ||
+    Object.keys(data).some((key) => !["payDay", "cutoffDay"].includes(key))
+  )
+    throw new HTTPException(400, { message: "設定項目を確認してください" });
+  const result: Partial<PayrollSettings> = {};
+  if ("payDay" in data) {
+    if (typeof data.payDay !== "boolean")
+      throw new HTTPException(400, { message: "給料日の値が不正です" });
+    result.payDay = data.payDay;
+  }
+  if ("cutoffDay" in data) {
+    if (typeof data.cutoffDay !== "boolean")
+      throw new HTTPException(400, { message: "締め日の値が不正です" });
+    result.cutoffDay = data.cutoffDay;
+  }
+  return result;
 }
 function taskStatus(value: unknown): value is TaskStatus {
   return value === "TODO" || value === "IN_PROGRESS" || value === "WAIT_REVIEW" || value === "DONE";
@@ -352,6 +371,17 @@ export function createApp(options: {
     if (identity.role === "child" && identity.id.toLowerCase() !== child.id)
       throw new HTTPException(403, { message: "この操作は許可されていません" });
     return c.json({ payroll: await repo().listPayroll(familyId(identity), undefined, child.id) });
+  });
+  app.get("/api/settings/payroll", auth, parentOnly, async (c) => {
+    const settings = await repo().getPayrollSettings(familyId(c.get("identity")));
+    if (!settings) throw new HTTPException(404, { message: "設定が見つかりません" });
+    return c.json({ settings });
+  });
+  app.patch("/api/settings/payroll", auth, parentOnly, async (c) => {
+    const fields = payrollSettingsFields(await body(c.req.raw));
+    const settings = await repo().updatePayrollSettings(familyId(c.get("identity")), fields);
+    if (!settings) throw new HTTPException(404, { message: "設定が見つかりません" });
+    return c.json({ settings });
   });
   app.post("/api/tasks", auth, parentOnly, async (c) => {
     const fields = taskFields(await body(c.req.raw));
