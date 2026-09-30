@@ -3,6 +3,7 @@ import { and, count, eq, gte, isNull, lt, sql } from "drizzle-orm";
 import type { PgDatabase, PgQueryResultHKT } from "drizzle-orm/pg-core";
 
 export type PushSubscription = NonNullable<typeof parents.$inferSelect.pushSubscription>;
+export type PayrollSettings = Pick<typeof parents.$inferSelect, "payDay" | "cutoffDay">;
 
 export type TaskFields = Pick<typeof tasks.$inferInsert, "name" | "memo" | "reward" | "deadline">;
 export type TaskStatus = typeof tasks.$inferSelect.status;
@@ -194,6 +195,23 @@ export function createRepository<T extends PgQueryResultHKT, S extends Record<st
         .update(parents)
         .set({ pushSubscription: null })
         .where(and(eq(parents.id, parentId), eq(parents.pushSubscription, subscription)));
+    },
+    async getPayrollSettings(parentId: string) {
+      return (
+        await db
+          .select({ payDay: parents.payDay, cutoffDay: parents.cutoffDay })
+          .from(parents)
+          .where(eq(parents.id, parentId))
+      ).at(0);
+    },
+    async updatePayrollSettings(parentId: string, fields: Partial<PayrollSettings>) {
+      return (
+        await db
+          .update(parents)
+          .set(fields)
+          .where(eq(parents.id, parentId))
+          .returning({ payDay: parents.payDay, cutoffDay: parents.cutoffDay })
+      ).at(0);
     },
     async parentByEmail(email: string) {
       return (await db.select().from(parents).where(eq(parents.email, email))).at(0);

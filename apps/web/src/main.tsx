@@ -711,6 +711,88 @@ function PushNotifications() {
   );
 }
 
+type PayrollSettings = { payDay: boolean; cutoffDay: boolean };
+function SalarySettings() {
+  const navigate = useNavigate();
+  const [settings, setSettings] = useState<PayrollSettings | null>(null);
+  const [saving, setSaving] = useState(false);
+  const [message, setMessage] = useState("");
+  useEffect(() => {
+    let active = true;
+    api<{ settings: PayrollSettings }>("/settings/payroll", { role: "parent" })
+      .then((result) => {
+        if (active) setSettings(result.settings);
+      })
+      .catch((e: unknown) => {
+        if (!active) return;
+        if (e instanceof ApiError && e.status === 401) void navigate("/", { replace: true });
+        else setMessage(e instanceof Error ? e.message : "通信に失敗しました");
+      });
+    return () => {
+      active = false;
+    };
+  }, [navigate]);
+  async function update(key: keyof PayrollSettings, value: boolean) {
+    setSaving(true);
+    setMessage("");
+    try {
+      const result = await api<{ settings: PayrollSettings }>("/settings/payroll", {
+        role: "parent",
+        method: "PATCH",
+        body: { [key]: value },
+      });
+      setSettings(result.settings);
+    } catch (e) {
+      if (e instanceof ApiError && e.status === 401) void navigate("/", { replace: true });
+      else setMessage(e instanceof Error ? e.message : "通信に失敗しました");
+    } finally {
+      setSaving(false);
+    }
+  }
+  return (
+    <div className="mx-auto max-w-xl space-y-6 py-6 sm:py-10">
+      <h1 className="text-center text-3xl font-extrabold sm:text-4xl">給与設定</h1>
+      {message && (
+        <p className="rounded-lg bg-red-50 px-4 py-3 text-red-800" role="alert">
+          {message}
+        </p>
+      )}
+      {!settings ? (
+        <p className={cardClass}>読み込み中…</p>
+      ) : (
+        <div className={`${cardClass} space-y-6`}>
+          <label className="grid gap-1 font-semibold">
+            給料日
+            <select
+              className={inputClass}
+              value={settings.payDay ? "15" : "end"}
+              disabled={saving}
+              onChange={(e) => void update("payDay", e.target.value === "15")}
+            >
+              <option value="end">月末</option>
+              <option value="15">15日</option>
+            </select>
+          </label>
+          <label className="grid gap-1 font-semibold">
+            締め日
+            <select
+              className={inputClass}
+              value={settings.cutoffDay ? "15" : "end"}
+              disabled={saving}
+              onChange={(e) => void update("cutoffDay", e.target.value === "15")}
+            >
+              <option value="end">月末</option>
+              <option value="15">15日</option>
+            </select>
+          </label>
+        </div>
+      )}
+      <Link className={linkClass} to="/settings">
+        設定へ戻る
+      </Link>
+    </div>
+  );
+}
 type PayrollRow = {
   id: string;
   childId: string;
@@ -886,6 +968,36 @@ function SalaryRecords() {
     </div>
   );
 }
+function LinkCard({
+  to,
+  icon,
+  title,
+  description,
+}: {
+  to: string;
+  icon: string;
+  title: string;
+  description: string;
+}) {
+  return (
+    <Link
+      to={to}
+      className={`${cardClass} flex items-center gap-4 transition-shadow hover:shadow-xl`}
+    >
+      <img
+        src={icon}
+        alt=""
+        width="48"
+        height="48"
+        className="h-11 w-11 shrink-0 object-contain sm:h-12 sm:w-12"
+      />
+      <div>
+        <h2 className="text-xl font-bold">{title}</h2>
+        <p className="text-sm text-[#5C410E]/70">{description}</p>
+      </div>
+    </Link>
+  );
+}
 function Top({ role }: { role: Role }) {
   const navigate = useNavigate();
   const { childId } = useParams();
@@ -898,38 +1010,24 @@ function Top({ role }: { role: Role }) {
       <TaskBoard role={role} childId={childId} />
       {role === "parent" && (
         <div className="grid gap-4 sm:grid-cols-2">
-          <Link
+          <LinkCard
             to="/children"
-            className={`${cardClass} flex items-center gap-4 transition-shadow hover:shadow-xl`}
-          >
-            <img
-              src="/images/icon-children.png"
-              alt=""
-              width="48"
-              height="48"
-              className="h-11 w-11 shrink-0 object-contain sm:h-12 sm:w-12"
-            />
-            <div>
-              <h2 className="text-xl font-bold">子供のログインURL</h2>
-              <p className="text-sm text-[#5C410E]/70">共有・追加はこちらから</p>
-            </div>
-          </Link>
-          <Link
+            icon="/images/icon-children.png"
+            title="子供のログインURL"
+            description="共有・追加はこちらから"
+          />
+          <LinkCard
             to="/records"
-            className={`${cardClass} flex items-center gap-4 transition-shadow hover:shadow-xl`}
-          >
-            <img
-              src="/images/icon-money.png"
-              alt=""
-              width="48"
-              height="48"
-              className="h-11 w-11 shrink-0 object-contain sm:h-12 sm:w-12"
-            />
-            <div>
-              <h2 className="text-xl font-bold">給与記録</h2>
-              <p className="text-sm text-[#5C410E]/70">月ごとの支払い実績を確認</p>
-            </div>
-          </Link>
+            icon="/images/icon-money.png"
+            title="給与記録"
+            description="月ごとの支払い実績を確認"
+          />
+          <LinkCard
+            to="/settings"
+            icon="/images/icon-account.png"
+            title="設定"
+            description="給与・通知・アカウントなどの設定"
+          />
         </div>
       )}
       <button
@@ -941,6 +1039,24 @@ function Top({ role }: { role: Role }) {
       >
         ログアウト
       </button>
+    </div>
+  );
+}
+function SettingsHub() {
+  return (
+    <div className="mx-auto max-w-xl space-y-6 py-6 sm:py-10">
+      <h1 className="text-center text-3xl font-extrabold sm:text-4xl">設定</h1>
+      <div className="grid gap-4 sm:grid-cols-2">
+        <LinkCard
+          to="/settings/payroll"
+          icon="/images/icon-money.png"
+          title="給与設定"
+          description="給料日・締め日を変更"
+        />
+      </div>
+      <Link className={linkClass} to="/top">
+        親のトップへ
+      </Link>
     </div>
   );
 }
@@ -980,6 +1096,22 @@ function App() {
           element={
             <Guard role="parent">
               <SalaryRecords />
+            </Guard>
+          }
+        />
+        <Route
+          path="/settings"
+          element={
+            <Guard role="parent">
+              <SettingsHub />
+            </Guard>
+          }
+        />
+        <Route
+          path="/settings/payroll"
+          element={
+            <Guard role="parent">
+              <SalarySettings />
             </Guard>
           }
         />
