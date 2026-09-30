@@ -11,9 +11,9 @@ test("parent changes payday and cutoff-day settings from the settings hub", asyn
   await page.getByRole("link", { name: "親のトップへ" }).click();
 
   await page.getByRole("link", { name: "設定" }).click();
-  await expect(page.getByRole("heading", { name: "設定" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "設定", exact: true })).toBeVisible();
   await page.getByRole("link", { name: "給与設定" }).click();
-  await expect(page.getByRole("heading", { name: "給与設定" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "給与設定", exact: true })).toBeVisible();
 
   await expect(page.getByLabel("給料日")).toHaveValue("end");
   await expect(page.getByLabel("締め日")).toHaveValue("end");
