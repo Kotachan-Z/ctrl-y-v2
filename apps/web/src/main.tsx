@@ -749,6 +749,7 @@ function SalaryRecords() {
     if (!selectedChild) return;
     let active = true;
     setLoaded(false);
+    setMessage("");
     api<{ payroll: PayrollRow[] }>(`/children/${selectedChild}/payroll`, { role: "parent" })
       .then((result) => {
         if (active) {
@@ -768,10 +769,13 @@ function SalaryRecords() {
   const years = useMemo(() => {
     const set = new Set(rows.map((row) => Number(row.month.slice(0, 4))));
     set.add(new Date().getFullYear());
+    // Keep the current selection available even when switching to a child with no
+    // records for that year, so the <select> never drifts out of sync with `selectedYear`.
+    set.add(selectedYear);
     // Array.from(set) is already a fresh array, so sorting it in place is safe.
     // oxlint-disable-next-line unicorn/no-array-sort
     return Array.from(set).sort((a: number, b: number) => b - a);
-  }, [rows]);
+  }, [rows, selectedYear]);
   const months = useMemo(
     () =>
       Array.from({ length: 12 }, (_, i) => {
