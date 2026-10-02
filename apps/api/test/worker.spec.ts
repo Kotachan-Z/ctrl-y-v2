@@ -157,6 +157,7 @@ test("scheduled delivery deletes successful jobs and closes its database", async
     claimPushRetries: vi
       .fn()
       .mockResolvedValue([{ id: "job", parentId: "parent", taskName: "task", attempts: 1 }]),
+    ownsPushRetry: vi.fn().mockResolvedValue(true),
     parentById: vi.fn().mockResolvedValue({
       pushSubscription: {
         endpoint: "https://push.example.test/sub",

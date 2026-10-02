@@ -88,6 +88,14 @@ export function createRepository<T extends PgQueryResultHKT, S extends Record<st
         return claimed;
       });
     },
+    async ownsPushRetry(id: string, attempts: number) {
+      const rows = await db
+        .select({ id: pushRetryQueue.id })
+        .from(pushRetryQueue)
+        .where(and(eq(pushRetryQueue.id, id), eq(pushRetryQueue.attempts, attempts)))
+        .limit(1);
+      return rows.length > 0;
+    },
     async finishPushRetry(
       id: string,
       attempts: number,

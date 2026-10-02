@@ -50,7 +50,8 @@ async function deliverReview(
   vapid: VapidConfig,
   parentId: string,
   taskName: string,
-): Promise<Delivery> {
+  retryJob?: { id: string; attempts: number },
+): Promise<Delivery | null> {
   const subscription: PushSubscription | null | undefined = (await repository.parentById(parentId))
     ?.pushSubscription;
   if (!subscription) return { retry: false };
@@ -65,6 +66,9 @@ async function deliverReview(
     console.warn("Push payload construction failed");
     return { retry: false };
   }
+  // Check after subscription lookup and encryption, immediately before sending.
+  // This narrows the race with reclaiming; it does not make delivery exactly-once.
+  if (retryJob && !(await repository.ownsPushRetry(retryJob.id, retryJob.attempts))) return null;
   let response: Response;
   try {
     response = await fetch(subscription.endpoint, {
@@ -101,7 +105,7 @@ export async function notifyReview(
 ): Promise<void> {
   try {
     const result = await deliverReview(repository, vapid, parentId, taskName);
-    if (result.retry)
+    if (result?.retry)
       await repository.enqueuePushRetry(
         parentId,
         taskName,
@@ -124,7 +128,8 @@ export async function processPushRetries(
         await repository.finishPushRetry(job.id, job.attempts);
         continue;
       }
-      const result = await deliverReview(repository, vapid, job.parentId, job.taskName);
+      const result = await deliverReview(repository, vapid, job.parentId, job.taskName, job);
+      if (!result) continue;
       await repository.finishPushRetry(
         job.id,
         job.attempts,

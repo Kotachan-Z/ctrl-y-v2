@@ -429,6 +429,38 @@ test("retry uses the latest subscription and drops unsubscribed jobs", async () 
   expect(send).toHaveBeenCalledTimes(1);
   expect(await queued()).toEqual([]);
 });
+test.each(["reclaimed", "completed"])(
+  "retry skips sending when ownership is %s during payload construction",
+  async (state) => {
+    await due();
+    let reclaimed: Awaited<ReturnType<typeof fixture.repository.claimPushRetries>> = [];
+    build.mockImplementationOnce(async () => {
+      // Simulate another Cron taking over while this worker prepares the message.
+      reclaimed = await fixture.repository.claimPushRetries(new Date(Date.now() + 10 * 60_000));
+      expect(reclaimed).toHaveLength(1);
+      expect(reclaimed[0].attempts).toBe(2);
+      if (state === "completed")
+        await fixture.repository.finishPushRetry(reclaimed[0].id, reclaimed[0].attempts);
+      return payload;
+    });
+    await processPushRetries(fixture.repository, readVapidConfig());
+    expect(build).toHaveBeenCalledOnce();
+    expect(send).not.toHaveBeenCalled();
+    expect(await queued()).toEqual(state === "completed" ? [] : reclaimed);
+  },
+);
+test("retry ownership lookup failure prevents sending and preserves the lease", async () => {
+  await due();
+  const repository = {
+    ...fixture.repository,
+    ownsPushRetry: vi.fn().mockRejectedValue(new Error("db unavailable")),
+  };
+  await processPushRetries(repository, readVapidConfig());
+  expect(send).not.toHaveBeenCalled();
+  const [job] = await queued();
+  expect(job.attempts).toBe(1);
+  expect(job.nextAttemptAt.getTime()).toBeGreaterThan(Date.now());
+});
 test("claims are bounded, leased, recoverable and fenced against stale completion", async () => {
   for (let i = 0; i < 26; i++) await due();
   const now = new Date();
