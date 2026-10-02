@@ -112,7 +112,7 @@ Worker・CIのbundle検証・手動デプロイworkflowは実装済みです。�
   `GET /api/session` は画面ガード用のJWT・アカウント存在確認です。
 - 親・子供のトークンはlocalStorageの別キーに保存。ログアウトも該当ロールだけ削除。
 - JWTはHS256、24時間、用途`access`・issuer・audience・ロールを検証。
-  リセット用トークンは通常認証で拒否します。パスワードリセット機能自体は今回未実装。
+  リセット用トークンは通常認証で拒否します。再設定は以下の手順で利用できます。
 - パスワード・共有あいことばはbcryptjs（cost 12）で保存。
   パスワード8文字以上、あいことば4文字以上、いずれもUTF-8で72バイト以内。
   名前は前後の空白を除いて1〜50 Unicodeコードポイント、メールは前後空白除去・小文字化・254文字以内。
@@ -152,3 +152,14 @@ Worker・CIのbundle検証・手動デプロイworkflowは実装済みです。�
 - 親の`/settings/notifications`で通知を有効化・解除できます。許可後にVAPID公開鍵で購読しAPIへ保存、解除時はブラウザとAPI双方の購読を解除します。未対応・許可拒否は画面に表示します。
 - pushのタイトル・本文を通知表示し、クリックで既存ウィンドウを開くか`/`へ移動します。HTTPS（ローカルはlocalhost）が必要です。iOSの通知はホーム画面に追加した対応環境で利用します。
 - Playwrightでmanifest・service worker登録・通知設定ページの操作を検証します。購読処理はブラウザAPIをモックし、外部pushサービスには接続しません。
+
+## 親のパスワードリセット
+
+- ログイン画面の「パスワードを忘れた場合」→ `/forgot-password` から要求し、メールの `/reset-password/:token` で変更します。
+- `POST /api/parents/password-reset/request` は `{ email }`、`confirm` は `{ token, password }` を受け取ります。有効なメール形式であれば登録の有無・送信失敗にかかわらず同じ200応答です。
+- HS256・用途`reset`・親ロール・専用audience・issuerを検証し、期限は15分。DBの親レコードにSHA-256ハッシュと期限を保存し、更新時に原子的に消費します。再発行すると古いリンクは無効です。既存のログインJWTは従来の24時間の期限まで有効です。
+- レート制限は要求がメールごと、確認がisolate全体で各5回/60秒（成功・不正入力もカウント）。Workersでもリクエストをまたいで保持しますが、複数isolate間の共有はありません。確認の共有枠は利用者同士で競合するため、大規模運用時は分散レート制限が必要です。
+- ローカルは `apps/api/.env.local` の `RESEND_API_KEY` を空にすると、APIコンソールにリンクを出します。実メールは送りません。`WEB_ORIGIN=http://127.0.0.1:5173` を設定します。
+- 本番はResendで送信ドメインを検証し、送信権限を持つAPIキーを作成してください。`bunx wrangler secret put RESEND_API_KEY` と `bunx wrangler secret put RESEND_FROM_EMAIL` でキー・送信元（例 `Ctrl-Y <noreply@example.com>`）を設定し、`WEB_ORIGIN` に公開WebのHTTPSオリジンを設定します。同名の値を `.dev.vars` に設定すればWorkersローカル検証にも使えます。本番では未設定でもリンクをログ出力しません。
+- [Resend HTTP API](https://resend.com/docs/api-reference/emails/send-email)へ送信します。10秒でタイムアウトし、失敗は秘密値を含めずログに記録します。Workersでは`waitUntil`で配信処理を継続します。永続キューや自動再送はありません。
+- デプロイ前に追加migrationを適用してください。ローカルは `bun run --filter @ctrl-y/database migration`、本番は既存の `migration:production` 手順を使います。
