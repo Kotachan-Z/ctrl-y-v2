@@ -131,7 +131,7 @@ export function createRepository<T extends PgQueryResultHKT, S extends Record<st
         await tx
           .update(refreshTokens)
           .set({ revokedAt: new Date(Date.now()) })
-          .where(and(eq(refreshTokens.id, found.id), isNull(refreshTokens.revokedAt)));
+          .where(and(eq(refreshTokens.rootId, found.rootId), isNull(refreshTokens.revokedAt)));
       });
     },
     async recalculatePayroll(childId: string, month: string) {

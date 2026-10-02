@@ -255,3 +255,32 @@ test("revoking a parent session leaves its child's session usable", async () => 
     sub: first.child.id,
   });
 });
+
+test.each(["parent", "child"] as const)(
+  "%s logout with a rotated ancestor revokes descendants only in that chain",
+  async (role) => {
+    const first = await session(role);
+    const independent = await issueSession(first.identity, secret, fixture.repository);
+    const second = await rotate(first.refreshToken);
+    const third = await rotate(second.refreshToken);
+    for (let i = 0; i < 2; i++)
+      expect((await post("/auth/logout", { refreshToken: first.refreshToken })).status).toBe(200);
+    expect((await refresh(third.refreshToken)).status).toBe(401);
+    await rotate(independent.refreshToken);
+  },
+);
+
+test("logout racing a rotation leaves no active descendant", async () => {
+  const first = await session();
+  const second = await rotate(first.refreshToken);
+  const responses = await Promise.all([
+    refresh(second.refreshToken),
+    post("/auth/logout", { refreshToken: first.refreshToken }),
+  ]);
+  expect(responses[1].status).toBe(200);
+  const rows = await fixture.db
+    .select()
+    .from(refreshTokens)
+    .where(eq(refreshTokens.parentId, first.parent.id));
+  expect(rows.every((row) => row.revokedAt !== null)).toBe(true);
+});

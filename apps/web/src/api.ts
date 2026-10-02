@@ -18,6 +18,43 @@ export const tokens = {
     localStorage.removeItem(refreshKeys[role]);
   },
 };
+// Unverified claims are only a retry guard; the server still authenticates every request.
+function tokenOwner(token: string | null): Identity | undefined {
+  try {
+    if (!token) return undefined;
+    const encoded = token.split(".")[1].replace(/-/g, "+").replace(/_/g, "/");
+    const payload: unknown = JSON.parse(
+      atob(encoded.padEnd(Math.ceil(encoded.length / 4) * 4, "=")),
+    );
+    if (
+      typeof payload !== "object" ||
+      payload === null ||
+      !("sub" in payload) ||
+      typeof payload.sub !== "string" ||
+      !payload.sub ||
+      !("role" in payload)
+    )
+      return undefined;
+    if (payload.role === "parent") return { role: "parent", id: payload.sub };
+    if (
+      payload.role === "child" &&
+      "parentId" in payload &&
+      typeof payload.parentId === "string" &&
+      payload.parentId
+    )
+      return { role: "child", id: payload.sub, parentId: payload.parentId };
+  } catch {
+    // Malformed or missing claims cannot establish that a retry has the same owner.
+  }
+  return undefined;
+}
+function sameOwner(role: Role, first: string | null, second: string | null) {
+  const a = tokenOwner(first);
+  const b = tokenOwner(second);
+  return (
+    !!a && !!b && a.role === role && b.role === role && a.id === b.id && a.parentId === b.parentId
+  );
+}
 const refreshing: Partial<Record<Role, Promise<boolean>>> = {};
 // Web Locks also serialize refresh/logout across tabs sharing localStorage.
 const sessionLock = async <T>(role: Role, action: () => Promise<T>): Promise<T> =>
@@ -27,7 +64,7 @@ const sessionLock = async <T>(role: Role, action: () => Promise<T>): Promise<T> 
 async function refreshSession(role: Role, failedToken: string | null): Promise<boolean> {
   if (refreshing[role]) return refreshing[role];
   const pending = sessionLock(role, async () => {
-    if (tokens.get(role) !== failedToken) return tokens.get(role) !== null;
+    if (tokens.get(role) !== failedToken) return sameOwner(role, failedToken, tokens.get(role));
     const refreshToken = tokens.getRefresh(role);
     if (!refreshToken) {
       tokens.remove(role);
@@ -39,14 +76,15 @@ async function refreshSession(role: Role, failedToken: string | null): Promise<b
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ refreshToken }),
       });
+      if (response.status === 401 && tokens.getRefresh(role) === refreshToken) tokens.remove(role);
+      if (!response.ok) return false;
       const data = await response.json();
-      if (!response.ok || typeof data.token !== "string" || typeof data.refreshToken !== "string")
+      if (typeof data.token !== "string" || typeof data.refreshToken !== "string")
         throw new Error("Refresh failed");
       // A login in another view must not be overwritten by an older request.
       if (tokens.getRefresh(role) === refreshToken) tokens.set(role, data.token, data.refreshToken);
-      return tokens.get(role) !== null;
+      return sameOwner(role, failedToken, tokens.get(role));
     } catch {
-      if (tokens.getRefresh(role) === refreshToken) tokens.remove(role);
       return false;
     }
   });
@@ -62,7 +100,7 @@ export async function logout(role: Role) {
   await sessionLock(role, async () => {
     const refreshToken = tokens.getRefresh(role);
     if (refreshToken) await api("/auth/logout", { body: { refreshToken } });
-    tokens.remove(role);
+    if (tokens.getRefresh(role) === refreshToken) tokens.remove(role);
   });
 }
 export class ApiError extends Error {
@@ -95,6 +133,10 @@ export async function api<T>(
   if (response.status === 401 && options.role && !path.startsWith("/auth/")) {
     if (await refreshSession(options.role, token)) {
       const retryToken = tokens.get(options.role);
+      if (!sameOwner(options.role, token, retryToken)) {
+        const data = await response.json();
+        throw new ApiError(data.error ?? "通信に失敗しました", response.status);
+      }
       response = await send(retryToken);
       if (response.status === 401 && tokens.get(options.role) === retryToken)
         tokens.remove(options.role);
