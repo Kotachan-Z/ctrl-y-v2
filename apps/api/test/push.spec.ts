@@ -1,9 +1,9 @@
 import { buildPushPayload } from "@block65/webcrypto-web-push";
-import { children, parents } from "@ctrl-y/database";
+import { children, parents, pushRetryQueue } from "@ctrl-y/database";
 import { afterAll, afterEach, beforeAll, beforeEach, expect, test, vi } from "vitest";
 
 import { issueToken } from "../src/auth.js";
-import { notifyReview, readVapidConfig } from "../src/push.js";
+import { notifyReview, processPushRetries, readVapidConfig } from "../src/push.js";
 import { secret, testApp } from "./helpers.js";
 import { vapidEnv } from "./vapid-fixture.js";
 
@@ -48,6 +48,7 @@ afterAll(async () => {
   await fixture?.client.close();
 });
 beforeEach(async () => {
+  await fixture.db.delete(pushRetryQueue);
   build.mockReset();
   build.mockResolvedValue(payload);
   send.mockReset();
@@ -345,4 +346,132 @@ test.each([
   const value = { ...subscription, endpoint: `https://${host}/subscription` };
   expect((await request("/parents/push-subscription", "PUT", parent, value)).status).toBe(200);
   expect(await stored()).toEqual(value);
+});
+
+const queued = () => fixture.db.select().from(pushRetryQueue);
+test.each([408, 429, 500, 503, "network", "timeout"])(
+  "temporary failure %s persists only sanitized retry data",
+  async (status) => {
+    await fixture.repository.setPushSubscription(parentId, subscription);
+    if (typeof status === "number") send.mockResolvedValue(new Response(null, { status }));
+    else send.mockRejectedValue(new Error(`${status}: secret endpoint`));
+    const before = Date.now();
+    await notifyReview(fixture.repository, readVapidConfig(), parentId, "retry task");
+    const rows = await queued();
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({
+      parentId,
+      taskName: "retry task",
+      attempts: 0,
+      lastError: typeof status === "number" ? `http_${status}` : "network_or_timeout",
+    });
+    expect(rows[0].nextAttemptAt.getTime()).toBeGreaterThanOrEqual(before + 60_000);
+    expect(JSON.stringify(rows)).not.toContain("secret endpoint");
+  },
+);
+test.each([400, 401, 403, 404, 410, 302])("permanent status %s never queues", async (status) => {
+  await fixture.repository.setPushSubscription(parentId, subscription);
+  send.mockResolvedValue(new Response(null, { status }));
+  await notifyReview(fixture.repository, readVapidConfig(), parentId, "task");
+  expect(await queued()).toEqual([]);
+  expect(await stored()).toEqual(status === 404 || status === 410 ? null : subscription);
+});
+async function due(attempts = 0) {
+  await fixture.repository.setPushSubscription(parentId, subscription);
+  await fixture.db.insert(pushRetryQueue).values({
+    parentId,
+    taskName: "retry task",
+    attempts,
+    nextAttemptAt: new Date(0),
+    lastError: "http_503",
+  });
+}
+test.each([201, 404, 410, 403])("retry status %s removes the job", async (status) => {
+  await due();
+  send.mockResolvedValue(new Response(null, { status }));
+  await processPushRetries(fixture.repository, readVapidConfig());
+  expect(await queued()).toEqual([]);
+  expect(await stored()).toEqual(status === 404 || status === 410 ? null : subscription);
+});
+test.each([
+  [0, 5],
+  [1, 15],
+  [2, 60],
+  [3, 360],
+])("retry attempt %i backs off %i minutes", async (attempts, minutes) => {
+  await due(attempts);
+  send.mockResolvedValue(new Response(null, { status: 503 }));
+  const before = Date.now();
+  await processPushRetries(fixture.repository, readVapidConfig());
+  const [job] = await queued();
+  expect(job.attempts).toBe(attempts + 1);
+  expect(job.nextAttemptAt.getTime()).toBeGreaterThanOrEqual(before + minutes * 60_000);
+  expect(job.nextAttemptAt.getTime()).toBeLessThanOrEqual(Date.now() + minutes * 60_000);
+  await processPushRetries(fixture.repository, readVapidConfig());
+  expect(send).toHaveBeenCalledTimes(1);
+});
+test.each([4, 5])("retry limit at %i previous attempts discards the job", async (attempts) => {
+  await due(attempts);
+  send.mockRejectedValue(new Error("offline"));
+  await processPushRetries(fixture.repository, readVapidConfig());
+  expect(await queued()).toEqual([]);
+  expect(send).toHaveBeenCalledTimes(attempts === 4 ? 1 : 0);
+});
+test("retry uses the latest subscription and drops unsubscribed jobs", async () => {
+  await due();
+  const replacement = { ...subscription, endpoint: `${subscription.endpoint}/new` };
+  await fixture.repository.setPushSubscription(parentId, replacement);
+  await processPushRetries(fixture.repository, readVapidConfig());
+  expect(send.mock.calls[0][0]).toBe(replacement.endpoint);
+  await due();
+  await fixture.repository.setPushSubscription(parentId, null);
+  await processPushRetries(fixture.repository, readVapidConfig());
+  expect(send).toHaveBeenCalledTimes(1);
+  expect(await queued()).toEqual([]);
+});
+test.each(["reclaimed", "completed"])(
+  "retry skips sending when ownership is %s during payload construction",
+  async (state) => {
+    await due();
+    let reclaimed: Awaited<ReturnType<typeof fixture.repository.claimPushRetries>> = [];
+    build.mockImplementationOnce(async () => {
+      // Simulate another Cron taking over while this worker prepares the message.
+      reclaimed = await fixture.repository.claimPushRetries(new Date(Date.now() + 10 * 60_000));
+      expect(reclaimed).toHaveLength(1);
+      expect(reclaimed[0].attempts).toBe(2);
+      if (state === "completed")
+        await fixture.repository.finishPushRetry(reclaimed[0].id, reclaimed[0].attempts);
+      return payload;
+    });
+    await processPushRetries(fixture.repository, readVapidConfig());
+    expect(build).toHaveBeenCalledOnce();
+    expect(send).not.toHaveBeenCalled();
+    expect(await queued()).toEqual(state === "completed" ? [] : reclaimed);
+  },
+);
+test("retry ownership lookup failure prevents sending and preserves the lease", async () => {
+  await due();
+  const repository = {
+    ...fixture.repository,
+    ownsPushRetry: vi.fn().mockRejectedValue(new Error("db unavailable")),
+  };
+  await processPushRetries(repository, readVapidConfig());
+  expect(send).not.toHaveBeenCalled();
+  const [job] = await queued();
+  expect(job.attempts).toBe(1);
+  expect(job.nextAttemptAt.getTime()).toBeGreaterThan(Date.now());
+});
+test("claims are bounded, leased, recoverable and fenced against stale completion", async () => {
+  for (let i = 0; i < 26; i++) await due();
+  const now = new Date();
+  const first = await fixture.repository.claimPushRetries(now);
+  expect(first).toHaveLength(25);
+  expect(await fixture.repository.claimPushRetries(now)).toHaveLength(1);
+  expect(await fixture.repository.claimPushRetries(now)).toHaveLength(0);
+  const reclaimed = await fixture.repository.claimPushRetries(
+    new Date(now.getTime() + 10 * 60_000),
+  );
+  expect(reclaimed).toHaveLength(25);
+  await fixture.repository.finishPushRetry(first[0].id, first[0].attempts);
+  expect(await queued()).toHaveLength(26);
 });

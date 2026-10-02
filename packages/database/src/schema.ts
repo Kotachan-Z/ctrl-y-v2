@@ -89,3 +89,23 @@ export const payroll = pgTable(
     check("payroll_nonnegative", sql`${t.completedTaskCount} >= 0 and ${t.totalReward} >= 0`),
   ],
 );
+
+export const pushRetryQueue = pgTable(
+  "push_retry_queue",
+  {
+    id: uuid().primaryKey().defaultRandom(),
+    parentId: uuid()
+      .notNull()
+      .references(() => parents.id, { onDelete: "cascade" }),
+    taskName: text().notNull(),
+    attempts: integer().notNull().default(0),
+    nextAttemptAt: timestamp({ withTimezone: true }).notNull(),
+    createdAt: createdAt(),
+    lastError: text().notNull(),
+  },
+  (t) => [
+    index("push_retry_due_idx").on(t.nextAttemptAt, t.id),
+    index("push_retry_parent_idx").on(t.parentId),
+    check("push_retry_attempts_nonnegative", sql`${t.attempts} >= 0`),
+  ],
+);
