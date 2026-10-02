@@ -18,7 +18,7 @@ import {
   useParams,
 } from "react-router-dom";
 
-import { api, ApiError, tokens, type Child, type Identity, type Role } from "./api";
+import { api, logout, ApiError, tokens, type Child, type Identity, type Role } from "./api";
 import { registerServiceWorker, urlBase64ToUint8Array } from "./push";
 
 import "./style.css";
@@ -124,11 +124,11 @@ function ParentLogin({ signup = false }: { signup?: boolean }) {
       <Form
         label={signup ? "登録する" : "ログイン"}
         submit={async (data) => {
-          const result = await api<{ token: string; needsSetup: boolean }>(
+          const result = await api<{ token: string; refreshToken: string; needsSetup: boolean }>(
             signup ? "/parents" : "/parents/login",
             { body: { email: data.get("email"), password: data.get("password") } },
           );
-          tokens.set("parent", result.token);
+          tokens.set("parent", result.token, result.refreshToken);
           void navigate(result.needsSetup ? "/setup" : "/top", { replace: true });
         }}
       >
@@ -298,10 +298,13 @@ function ChildLogin() {
       <Form
         label="ログイン"
         submit={async (data) => {
-          const { token } = await api<{ token: string }>(`/children/${childId}/login`, {
-            body: { keyword: data.get("keyword") },
-          });
-          tokens.set("child", token);
+          const { token, refreshToken } = await api<{ token: string; refreshToken: string }>(
+            `/children/${childId}/login`,
+            {
+              body: { keyword: data.get("keyword") },
+            },
+          );
+          tokens.set("child", token, refreshToken);
           void navigate(`/child/top/${childId}`, { replace: true });
         }}
       >
@@ -1032,8 +1035,13 @@ function Top({ role }: { role: Role }) {
       <button
         className={neutralButton}
         onClick={() => {
-          tokens.remove(role);
-          void navigate(role === "parent" ? "/" : `/child/login/${childId}`, { replace: true });
+          void logout(role)
+            .then(() => {
+              void navigate(role === "parent" ? "/" : `/child/login/${childId}`, { replace: true });
+            })
+            .catch(() => {
+              window.alert("ログアウトに失敗しました。通信を確認して再試行してください。");
+            });
         }}
       >
         ログアウト

@@ -26,7 +26,8 @@ export async function issueToken(identity: Identity, secret: string) {
       iss: issuer,
       aud: audience,
       iat: now,
-      exp: now + 60 * 60 * 24,
+      exp: now + 60 * 60,
+      jti: crypto.randomUUID(),
     },
     secret,
     "HS256",
@@ -51,7 +52,8 @@ export function authenticate(secret: string, repository: () => AuthRepository) {
         typeof payload.iat !== "number" ||
         !Number.isFinite(payload.iat) ||
         payload.iat > now ||
-        payload.exp <= payload.iat
+        payload.exp <= payload.iat ||
+        payload.exp - payload.iat > 60 * 60
       )
         throw new Error("Invalid access claims");
       if (payload.role === "parent") identity = { role: "parent", id: payload.sub };
@@ -78,3 +80,24 @@ export const parentOnly = createMiddleware<AuthEnv>(async (c, next) => {
   if (c.get("identity").role !== "parent") return c.json({ error: "親アカウントが必要です" }, 403);
   await next();
 });
+
+export async function hashRefreshToken(token: string) {
+  const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(token));
+  return Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, "0")).join("");
+}
+export async function newRefreshToken() {
+  const token = Array.from(crypto.getRandomValues(new Uint8Array(32)), (byte) =>
+    byte.toString(16).padStart(2, "0"),
+  ).join("");
+  return {
+    token,
+    tokenHash: await hashRefreshToken(token),
+    expiresAt: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000),
+  };
+}
+export async function issueSession(identity: Identity, secret: string, repository: AuthRepository) {
+  const refresh = await newRefreshToken();
+  const token = await issueToken(identity, secret);
+  await repository.createRefreshToken(identity, refresh);
+  return { token, refreshToken: refresh.token };
+}

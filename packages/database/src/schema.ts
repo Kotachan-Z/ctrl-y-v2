@@ -89,3 +89,38 @@ export const payroll = pgTable(
     check("payroll_nonnegative", sql`${t.completedTaskCount} >= 0 and ${t.totalReward} >= 0`),
   ],
 );
+
+// parentId is the family for both roles; a child session must belong to that family.
+export const refreshTokens = pgTable(
+  "refresh_tokens",
+  {
+    id: uuid().primaryKey(),
+    role: text().$type<"parent" | "child">().notNull(),
+    parentId: uuid()
+      .notNull()
+      .references(() => parents.id, { onDelete: "cascade" }),
+    childId: uuid(),
+    tokenHash: text().notNull().unique(),
+    createdAt: createdAt(),
+    expiresAt: timestamp({ withTimezone: true }).notNull(),
+    revokedAt: timestamp({ withTimezone: true }),
+    // The initial row points to itself and is the lock shared by every rotation.
+    rootId: uuid().notNull(),
+    previousId: uuid().unique(),
+  },
+  (t) => [
+    index("refresh_tokens_root_idx").on(t.rootId),
+    index("refresh_tokens_parent_idx").on(t.parentId),
+    index("refresh_tokens_child_idx").on(t.childId),
+    foreignKey({
+      columns: [t.childId, t.parentId],
+      foreignColumns: [children.id, children.parentId],
+    }).onDelete("cascade"),
+    foreignKey({ columns: [t.rootId], foreignColumns: [t.id] }).onDelete("cascade"),
+    foreignKey({ columns: [t.previousId], foreignColumns: [t.id] }).onDelete("cascade"),
+    check(
+      "refresh_tokens_role_owner",
+      sql`(${t.role} = 'parent' and ${t.childId} is null) or (${t.role} = 'child' and ${t.childId} is not null)`,
+    ),
+  ],
+);

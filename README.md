@@ -110,8 +110,18 @@ Worker・CIのbundle検証・手動デプロイworkflowは実装済みです。�
 - `POST /api/parents`, `POST /api/parents/login`, `POST /api/setup`,
   `POST /api/children`, `GET /api/children`, `POST /api/children/:childId/login`。
   `GET /api/session` は画面ガード用のJWT・アカウント存在確認です。
-- 親・子供のトークンはlocalStorageの別キーに保存。ログアウトも該当ロールだけ削除。
-- JWTはHS256、24時間、用途`access`・issuer・audience・ロールを検証。
+- access tokenとrefresh tokenは親・子供それぞれlocalStorageの別キーに保存。
+  401時は該当ロールのrefreshを1回行い、成功時のみ元のリクエストを1回再試行します。
+  同時refreshをまとめ、Web Locks対応ブラウザではタブ間も直列化します。
+- ログイン・登録のレスポンスは`token`に加え`refreshToken`を返します。
+  `POST /api/auth/refresh`は`{ refreshToken }`を受け取り、新しい両トークンを返します（Authorization不要）。
+  refresh tokenは256ビットのランダム値・30日有効で、DBにはSHA-256ハッシュのみ保存。
+  毎回ローテーションし、失効済みtokenの再利用は同じ系譜を全失効して401にします。
+  系譜のルート行をDBでロックし、並行更新にも対応します。独立したログインの系譜は影響しません。
+- `POST /api/auth/logout`は`{ refreshToken }`を冪等に失効し、Webは成功後に該当ロールの両tokenを削除。
+  通信失敗時は再試行できるよう保持します。発行済みaccess tokenは有効期限まで有効です。
+- refreshの失敗はtokenダイジェスト別に5回/60秒で制限します。既存の制限と同様、Workers isolate単位です。
+- JWTはHS256、1時間、用途`access`・issuer・audience・ロールを検証。
   リセット用トークンは通常認証で拒否します。パスワードリセット機能自体は今回未実装。
 - パスワード・共有あいことばはbcryptjs（cost 12）で保存。
   パスワード8文字以上、あいことば4文字以上、いずれもUTF-8で72バイト以内。
