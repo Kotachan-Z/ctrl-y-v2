@@ -2,6 +2,7 @@ import { AsyncLocalStorage } from "node:async_hooks";
 
 import { createProductionDatabase } from "@ctrl-y/database/production";
 
+import { createFailureLimiter } from "./rate-limit.js";
 import { createRepository, type AuthRepository } from "./repository.js";
 import { createApp } from "./server.js";
 
@@ -14,6 +15,8 @@ export interface Env {
   VAPID_SUBJECT: string;
 }
 
+// Keep counters for the lifetime of this isolate, across per-request apps.
+const failureLimiter = createFailureLimiter();
 const requests = new AsyncLocalStorage<{
   repository: AuthRepository;
   pending: Promise<void>[];
@@ -31,6 +34,7 @@ export default {
 
     const app = createApp({
       jwtSecret: env.JWT_SECRET ?? "",
+      failureLimiter,
       vapid: {
         publicKey: env.VAPID_PUBLIC_KEY ?? "",
         privateKey: env.VAPID_PRIVATE_KEY ?? "",
