@@ -124,10 +124,92 @@ test("validation and confirmation rate limits apply even to malformed input", as
   for (let i = 0; i < 5; i++)
     expect((await post(api, "confirm", { token: "bad", password: "short" })).status).toBe(400);
   expect((await post(api, "confirm", { token: "bad", password: "new-password" })).status).toBe(429);
+  for (let i = 0; i < 5; i++)
+    expect((await post(api, "confirm", { password: "new-password" })).status).toBe(401);
+  expect((await post(api, "confirm", { token: 123, password: "new-password" })).status).toBe(429);
   const p = await parent();
   const token = await savedToken(p.id);
-  expect((await post(app(), "confirm", { token, password: "あ".repeat(25) })).status).toBe(400);
-  expect((await post(app(), "confirm", { token, password: "new-password" })).status).toBe(200);
+  expect((await post(api, "confirm", { token, password: "あ".repeat(25) })).status).toBe(400);
+  expect((await post(api, "confirm", { token, password: "new-password" })).status).toBe(200);
+});
+test("exhausting one valid token does not block another family", async () => {
+  const first = await parent();
+  const second = await parent();
+  const firstToken = await savedToken(first.id);
+  const secondToken = await savedToken(second.id);
+  const api = app();
+  for (let i = 0; i < 5; i++)
+    expect((await post(api, "confirm", { token: firstToken, password: "short" })).status).toBe(400);
+  expect((await post(api, "confirm", { token: firstToken, password: "new-password" })).status).toBe(
+    429,
+  );
+  expect(
+    (await post(api, "confirm", { token: secondToken, password: "new-password" })).status,
+  ).toBe(200);
+});
+test.each(["rejected", "timeout"])(
+  "failed delivery preserves the previous link: %s",
+  async (failure) => {
+    const p = await parent();
+    const token = await savedToken(p.id);
+    const before = await fixture.repository.parentById(p.id);
+    const fetchMock = vi.fn<typeof fetch>();
+    if (failure === "rejected") fetchMock.mockResolvedValue(new Response("", { status: 500 }));
+    else fetchMock.mockRejectedValue(new DOMException("Timed out", "TimeoutError"));
+    vi.stubGlobal("fetch", fetchMock);
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    const api = createApp({
+      repository: fixture.repository,
+      jwtSecret: secret,
+      resetMail: {
+        apiKey: "test-key",
+        from: "reset@example.test",
+        webOrigin: "https://example.test",
+      },
+    });
+    expect((await post(api, "request", { email: p.email })).status).toBe(200);
+    const after = await fixture.repository.parentById(p.id);
+    expect(after?.passwordResetHash).toBe(before?.passwordResetHash);
+    expect(after?.passwordResetExpiresAt).toEqual(before?.passwordResetExpiresAt);
+    expect((await post(api, "confirm", { token, password: "new-password" })).status).toBe(200);
+  },
+);
+test("background delivery responds before sending finishes and then saves the token", async () => {
+  const p = await parent();
+  const previousToken = await savedToken(p.id);
+  let finish!: (response: Response) => void;
+  const delivery = new Promise<Response>((resolve) => {
+    finish = resolve;
+  });
+  vi.stubGlobal("fetch", vi.fn<typeof fetch>().mockReturnValue(delivery));
+  const pending: Promise<void>[] = [];
+  const api = createApp({
+    repository: fixture.repository,
+    jwtSecret: secret,
+    resetMail: {
+      apiKey: "test-key",
+      from: "reset@example.test",
+      webOrigin: "https://example.test",
+    },
+    backgroundTask: (task) => {
+      pending.push(task);
+    },
+  });
+  try {
+    const existing = await post(api, "request", { email: p.email });
+    const missing = await post(api, "request", { email: "background-missing@example.test" });
+    expect(existing.status).toBe(200);
+    expect(await existing.json()).toEqual(await missing.json());
+    expect((await fixture.repository.parentById(p.id))?.passwordResetHash).toBe(
+      await tokenDigest(previousToken),
+    );
+  } finally {
+    finish(new Response("{}", { status: 200 }));
+    await Promise.all(pending);
+  }
+  expect((await fixture.repository.parentById(p.id))?.passwordResetHash).not.toBe(
+    await tokenDigest(previousToken),
+  );
 });
 test("Resend HTTP request and failures never expose account existence", async () => {
   const fetchMock = vi.fn<typeof fetch>().mockResolvedValue(new Response("{}", { status: 200 }));

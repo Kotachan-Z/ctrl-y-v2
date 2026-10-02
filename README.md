@@ -157,9 +157,9 @@ Worker・CIのbundle検証・手動デプロイworkflowは実装済みです。�
 
 - ログイン画面の「パスワードを忘れた場合」→ `/forgot-password` から要求し、メールの `/reset-password/:token` で変更します。
 - `POST /api/parents/password-reset/request` は `{ email }`、`confirm` は `{ token, password }` を受け取ります。有効なメール形式であれば登録の有無・送信失敗にかかわらず同じ200応答です。
-- HS256・用途`reset`・親ロール・専用audience・issuerを検証し、期限は15分。DBの親レコードにSHA-256ハッシュと期限を保存し、更新時に原子的に消費します。再発行すると古いリンクは無効です。既存のログインJWTは従来の24時間の期限まで有効です。
-- レート制限は要求がメールごと、確認がisolate全体で各5回/60秒（成功・不正入力もカウント）。Workersでもリクエストをまたいで保持しますが、複数isolate間の共有はありません。確認の共有枠は利用者同士で競合するため、大規模運用時は分散レート制限が必要です。
+- HS256・用途`reset`・親ロール・専用audience・issuerを検証し、期限は15分。DBの親レコードにSHA-256ハッシュと期限を保存し、更新時に原子的に消費します。再発行はメール送信成功後にDBへ保存し、その時点で古いリンクは無効です。送信失敗時は以前のリンクを維持します。既存のログインJWTは従来の24時間の期限まで有効です。
+- レート制限は要求が正規化したメールごと、確認が送信されたトークンのSHA-256ダイジェストごとに各5回/60秒で、成功もカウントします。要求のメール形式不正やJSON解析エラーはカウントしません。確認ではJSON解析後のパスワード・トークン検証エラーもカウントし、トークンが未指定または文字列でない場合は共通の不正入力用枠を使います。Workersでもリクエストをまたいで保持しますが、複数isolate間の共有はありません。異なるトークンを使う大量リクエストを全体で制限するものではありません。
 - ローカルは `apps/api/.env.local` の `RESEND_API_KEY` を空にすると、APIコンソールにリンクを出します。実メールは送りません。`WEB_ORIGIN=http://127.0.0.1:5173` を設定します。
 - 本番はResendで送信ドメインを検証し、送信権限を持つAPIキーを作成してください。`bunx wrangler secret put RESEND_API_KEY` と `bunx wrangler secret put RESEND_FROM_EMAIL` でキー・送信元（例 `Ctrl-Y <noreply@example.com>`）を設定し、`WEB_ORIGIN` に公開WebのHTTPSオリジンを設定します。同名の値を `.dev.vars` に設定すればWorkersローカル検証にも使えます。本番では未設定でもリンクをログ出力しません。
-- [Resend HTTP API](https://resend.com/docs/api-reference/emails/send-email)へ送信します。10秒でタイムアウトし、失敗は秘密値を含めずログに記録します。Workersでは`waitUntil`で配信処理を継続します。永続キューや自動再送はありません。
+- [Resend HTTP API](https://resend.com/docs/api-reference/emails/send-email)へ送信します。10秒でタイムアウトし、失敗は秘密値を含めずログに記録します。Workersでは`waitUntil`で配信処理を継続し、ローカルBunでも配信完了を待たずに応答します。永続キューや自動再送はありません。
 - デプロイ前に追加migrationを適用してください。ローカルは `bun run --filter @ctrl-y/database migration`、本番は既存の `migration:production` 手順を使います。

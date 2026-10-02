@@ -332,8 +332,8 @@ export function createApp(options: {
           const parent = await repo().parentByEmail(email);
           if (!parent) return;
           const { token, expiresAt } = await issueResetToken(parent.id, options.jwtSecret);
-          await repo().savePasswordReset(parent.id, await tokenDigest(token), expiresAt);
           await sendResetEmail(email, token, options.resetMail);
+          await repo().savePasswordReset(parent.id, await tokenDigest(token), expiresAt);
         } catch {
           // Do not disclose account existence or log tokens/provider response bodies.
           console.error("Password reset delivery failed");
@@ -346,18 +346,14 @@ export function createApp(options: {
     });
   });
   app.post("/api/parents/password-reset/confirm", async (c) => {
-    // A fixed bucket also bounds malformed tokens and bcrypt work without trusting headers.
-    return resetLimit("reset-confirm", async () => {
-      const data = await body(c.req.raw);
+    const data = await body(c.req.raw);
+    const digest = typeof data.token === "string" ? await tokenDigest(data.token) : "invalid";
+    return resetLimit(`reset-confirm:${digest}`, async () => {
       const password = secretText(data.password, 8, "パスワード");
       const parentId = await readResetToken(data.token, options.jwtSecret);
       if (!parentId || typeof data.token !== "string")
         return c.json({ error: "リンクが無効か期限切れです。再発行してください" }, 401);
-      const changed = await repo().resetPassword(
-        parentId,
-        await tokenDigest(data.token),
-        await hash(password, 12),
-      );
+      const changed = await repo().resetPassword(parentId, digest, await hash(password, 12));
       if (!changed) return c.json({ error: "リンクが無効か期限切れです。再発行してください" }, 401);
       return c.json({ success: true });
     });

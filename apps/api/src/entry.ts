@@ -5,6 +5,9 @@ import { createApp } from "./server.js";
 const { db } = createLocalDatabase();
 const app = createApp({
   repository: createRepository(db),
+  backgroundTask: (task) => {
+    void task.catch(() => console.error("Background task failed"));
+  },
   resetMail: {
     apiKey: process.env.RESEND_API_KEY,
     from: process.env.RESEND_FROM_EMAIL,
