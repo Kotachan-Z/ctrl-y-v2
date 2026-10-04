@@ -7,6 +7,7 @@ const status = (error: unknown) => {
   if (error instanceof HTTPException) return error.status;
   throw error;
 };
+const respond401 = async () => new Response(null, { status: 401 });
 
 test.each([401, 409])("reserves capacity before concurrent %s attempts", async (failure) => {
   const limit = createFailureLimiter();
@@ -63,7 +64,7 @@ test("preserves an active lockout when throwaway identifiers force capacity evic
   }
 });
 
-test("rejects new identifiers when all entries are locked out until expiration", async () => {
+test("admits new identifiers by evicting the oldest lock when all entries are locked", async () => {
   const clock = vi.spyOn(Date, "now").mockReturnValue(1_000);
   try {
     const limit = createFailureLimiter();
@@ -75,8 +76,9 @@ test("rejects new identifiers when all entries are locked out until expiration",
     }
     attempt.mockClear();
     clock.mockReturnValue(60_999);
-    await expect(limit("new", attempt)).rejects.toMatchObject({ status: 429 });
-    expect(attempt).not.toHaveBeenCalled();
+    expect((await limit("new", attempt)).status).toBe(401);
+    await expect(limit("1", attempt)).rejects.toMatchObject({ status: 429 });
+    expect((await limit("0", attempt)).status).toBe(401);
     expect(limit.stateSizeForTesting()).toBe(FAILURE_LIMITER_MAX_ENTRIES);
     clock.mockReturnValue(61_000);
     expect((await limit("new", attempt)).status).toBe(401);
@@ -128,3 +130,42 @@ test("keeps active reservations across success, expiration, and capacity pressur
     clock.mockRestore();
   }
 });
+
+test("preserves repeated failures below lockout during throwaway churn", async () => {
+  const limit = createFailureLimiter();
+  for (let i = 0; i < 4; i += 1) await limit("target", respond401);
+  for (let i = 0; i < FAILURE_LIMITER_MAX_ENTRIES + 25; i += 1) {
+    await limit(String(i), respond401);
+  }
+  await limit("target", respond401);
+  await expect(limit("target", respond401)).rejects.toMatchObject({ status: 429 });
+});
+
+test.each([200, 401])(
+  "evicted in-flight completion (%s) cannot mutate a replacement",
+  async (code) => {
+    const limit = createFailureLimiter();
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const pending = Array.from({ length: FAILURE_LIMITER_MAX_ENTRIES }, (_, i) =>
+      limit(String(i), async () => {
+        await gate;
+        return new Response(null, { status: code });
+      }),
+    );
+    try {
+      await limit("new", respond401);
+      for (let i = 0; i < 5; i += 1) await limit("0", respond401);
+      expect(limit.stateSizeForTesting()).toBe(FAILURE_LIMITER_MAX_ENTRIES);
+    } finally {
+      release();
+      await Promise.all(pending);
+    }
+    await expect(limit("0", respond401)).rejects.toMatchObject({ status: 429 });
+    // Further eviction must not encounter stale idle keys from detached entries.
+    for (let i = 0; i < FAILURE_LIMITER_MAX_ENTRIES; i += 1) await limit(`next-${i}`, respond401);
+    expect(limit.stateSizeForTesting()).toBe(FAILURE_LIMITER_MAX_ENTRIES);
+  },
+);

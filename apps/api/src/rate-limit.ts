@@ -17,19 +17,32 @@ export function createFailureLimiter() {
     let entry = entries.get(key);
     if (!entry) {
       if (entries.size >= FAILURE_LIMITER_MAX_ENTRIES) {
+        let victim: string | undefined;
+        let fewestFailures = 5;
         for (const candidate of idle) {
           const idleEntry = entries.get(candidate)!;
-          if (idleEntry.failures >= 5 && idleEntry.expiresAt > now) continue;
-          idle.delete(candidate);
-          entries.delete(candidate);
-          break;
+          if (idleEntry.expiresAt <= now) {
+            victim = candidate;
+            break;
+          }
+          // Preserve accumulated failures over one-off throwaway identifiers.
+          // Ties use the oldest idle entry.
+          if (idleEntry.failures < fewestFailures) {
+            victim = candidate;
+            fewestFailures = idleEntry.failures;
+          }
         }
-        if (entries.size >= FAILURE_LIMITER_MAX_ENTRIES) return reject();
+        // Availability wins when every entry is locked (or still in flight).
+        victim ??= idle.values().next().value ?? entries.keys().next().value;
+        if (victim !== undefined) {
+          idle.delete(victim);
+          entries.delete(victim);
+        }
       }
       entry = { failures: 0, inFlight: 0, expiresAt: now + duration };
       entries.set(key, entry);
     }
-    // Expire on access; capacity eviction skips idle entries with active lockouts.
+    // Expire on access; capacity pressure may release locks early.
     if (entry.expiresAt <= now) {
       entry.failures = 0;
       entry.expiresAt = now + duration;
@@ -52,7 +65,7 @@ export function createFailureLimiter() {
       return response;
     } finally {
       entry.inFlight -= 1;
-      if (entry.inFlight === 0) {
+      if (entry.inFlight === 0 && entries.get(key) === entry) {
         if (entry.failures === 0) entries.delete(key);
         else idle.add(key);
       }
