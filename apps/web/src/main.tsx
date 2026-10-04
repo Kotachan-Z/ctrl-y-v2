@@ -18,7 +18,18 @@ import {
   useParams,
 } from "react-router-dom";
 
-import { api, ApiError, tokens, type Child, type Identity, type Role } from "./api";
+import {
+  api,
+  ApiError,
+  tokens,
+  offlineEvent,
+  syncEvent,
+  pendingOperations,
+  startOfflineReplay,
+  type Child,
+  type Identity,
+  type Role,
+} from "./api";
 import { registerServiceWorker, urlBase64ToUint8Array } from "./push";
 
 import "./style.css";
@@ -392,6 +403,17 @@ function TaskBoard({ role, childId }: { role: Role; childId?: string }) {
   const [busy, setBusy] = useState(false);
   const [editing, setEditing] = useState<string | null>(null);
   const [version, setVersion] = useState(0);
+  const [pending, setPending] = useState(() => pendingOperations(role));
+  useEffect(() => {
+    const updatePending = () => setPending(pendingOperations(role));
+    const refresh = () => setVersion((v) => v + 1);
+    window.addEventListener(offlineEvent, updatePending);
+    window.addEventListener(syncEvent, refresh);
+    return () => {
+      window.removeEventListener(offlineEvent, updatePending);
+      window.removeEventListener(syncEvent, refresh);
+    };
+  }, [role]);
   const [tab, setTab] = useState<"list" | "create">("list");
   const boardRef = useRef<HTMLDivElement>(null);
   const navigate = useNavigate();
@@ -421,12 +443,15 @@ function TaskBoard({ role, childId }: { role: Role; childId?: string }) {
     setBusy(true);
     setError("");
     try {
-      await api(`/tasks/${task.id}${status ? "/status" : ""}`, {
-        role,
-        method: status ? "PATCH" : "DELETE",
-        ...(status ? { body: { status } } : {}),
-      });
-      setVersion((v) => v + 1);
+      const result = await api<{ queued?: boolean }>(
+        `/tasks/${task.id}${status ? "/status" : ""}`,
+        {
+          role,
+          method: status ? "PATCH" : "DELETE",
+          ...(status ? { body: { status } } : {}),
+        },
+      );
+      if (!result.queued) setVersion((v) => v + 1);
     } catch (e) {
       report(e);
       setVersion((v) => v + 1);
@@ -542,7 +567,10 @@ function TaskBoard({ role, childId }: { role: Role; childId?: string }) {
                           {status === "WAIT_REVIEW" && (
                             <button
                               className={`${buttonClass} bg-green-400 text-[#5C410E] enabled:hover:bg-green-500`}
-                              disabled={busy}
+                              disabled={
+                                busy ||
+                                pending.some((entry) => entry.path === `/tasks/${task.id}/status`)
+                              }
                               onClick={() => mutate(task, "DONE")}
                             >
                               承認
@@ -576,7 +604,10 @@ function TaskBoard({ role, childId }: { role: Role; childId?: string }) {
                           {status === "TODO" && task.childId === null && (
                             <button
                               className={primaryButton}
-                              disabled={busy}
+                              disabled={
+                                busy ||
+                                pending.some((entry) => entry.path === `/tasks/${task.id}/status`)
+                              }
                               onClick={() => mutate(task, "IN_PROGRESS")}
                             >
                               はじめる
@@ -585,7 +616,10 @@ function TaskBoard({ role, childId }: { role: Role; childId?: string }) {
                           {status === "IN_PROGRESS" && task.childId === childId && (
                             <button
                               className={primaryButton}
-                              disabled={busy}
+                              disabled={
+                                busy ||
+                                pending.some((entry) => entry.path === `/tasks/${task.id}/status`)
+                              }
                               onClick={() => mutate(task, "WAIT_REVIEW")}
                             >
                               できた!
@@ -1076,10 +1110,52 @@ function NotificationSettings() {
     </div>
   );
 }
+function OfflineStatus() {
+  const [offline, setOffline] = useState(!navigator.onLine);
+  const [cached, setCached] = useState(false);
+  const [count, setCount] = useState(() => pendingOperations().length);
+  const [message, setMessage] = useState("");
+  useEffect(() => {
+    const connection = () => setOffline(!navigator.onLine);
+    const cacheUsed = () => setCached(true);
+    const update = (event: Event) => {
+      setCount(pendingOperations().length);
+      if (event instanceof CustomEvent && typeof event.detail === "string")
+        setMessage(event.detail);
+    };
+    window.addEventListener("online", connection);
+    window.addEventListener("offline", connection);
+    window.addEventListener("ctrl-y-cached", cacheUsed);
+    window.addEventListener(offlineEvent, update);
+    window.addEventListener("storage", update);
+    const stop = startOfflineReplay();
+    return () => {
+      stop();
+      window.removeEventListener("online", connection);
+      window.removeEventListener("offline", connection);
+      window.removeEventListener("ctrl-y-cached", cacheUsed);
+      window.removeEventListener(offlineEvent, update);
+      window.removeEventListener("storage", update);
+    };
+  }, []);
+  return (
+    <aside className="text-center text-sm" aria-live="polite">
+      {(offline || cached) && (
+        <p>
+          オフライン表示中（最終更新:
+          直前の取得結果）。最新情報はオンラインで再読み込みしてください。
+        </p>
+      )}
+      {count > 0 && <p>未送信の操作: {count}件</p>}
+      {message && <p>{message}</p>}
+    </aside>
+  );
+}
 function App() {
   return (
     <main className="min-h-svh bg-[#FFF877] bg-[url('/images/back2.png')] bg-cover bg-fixed bg-center bg-no-repeat px-4 pt-[max(1rem,env(safe-area-inset-top))] pb-[max(1rem,env(safe-area-inset-bottom))] font-sans text-[#5C410E] md:bg-[url('/images/back.png')] sm:px-8">
       <p className="text-center text-sm font-bold tracking-wide">Ctrl-Y v2 · ご褒美ポケット</p>
+      <OfflineStatus />
       <Routes>
         <Route path="/" element={<ParentLogin />} />
         <Route path="/signup" element={<ParentLogin signup />} />
