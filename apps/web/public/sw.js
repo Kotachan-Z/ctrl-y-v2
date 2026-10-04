@@ -43,6 +43,8 @@ const API_CACHE = "ctrl-y-api-v1";
 const offlinePaths =
   /^\/api\/(?:tasks(?:\/[^/]+)?|payroll|children(?:\/[^/]+\/payroll)?|settings\/payroll|session)$/;
 
+const apiRequests = new Map();
+
 async function apiNetworkFirst(request) {
   let cache;
   let key;
@@ -61,6 +63,20 @@ async function apiNetworkFirst(request) {
   } catch {
     // Unavailable storage must not prevent online requests.
   }
+  if (!cache || !key) return apiFetch(request);
+  // Serialize the entire fetch/write cycle per key, in queue order. Different keys
+  // remain independent, and a failed request must not block the next request.
+  const previous = apiRequests.get(key) ?? Promise.resolve();
+  const current = previous.catch(() => {}).then(() => apiFetch(request, cache, key));
+  apiRequests.set(key, current);
+  try {
+    return await current;
+  } finally {
+    if (apiRequests.get(key) === current) apiRequests.delete(key);
+  }
+}
+
+async function apiFetch(request, cache, key) {
   let response;
   try {
     response = await fetch(request);

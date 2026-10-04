@@ -26,6 +26,8 @@ import {
   syncEvent,
   pendingOperations,
   startOfflineReplay,
+  replayOfflineOperations,
+  isOfflineQueueKey,
   type Child,
   type Identity,
   type Role,
@@ -407,11 +409,18 @@ function TaskBoard({ role, childId }: { role: Role; childId?: string }) {
   useEffect(() => {
     const updatePending = () => setPending(pendingOperations(role));
     const refresh = () => setVersion((v) => v + 1);
+    const storage = (event: StorageEvent) => {
+      if (event.storageArea !== localStorage || !isOfflineQueueKey(event.key)) return;
+      updatePending();
+      refresh();
+    };
     window.addEventListener(offlineEvent, updatePending);
     window.addEventListener(syncEvent, refresh);
+    window.addEventListener("storage", storage);
     return () => {
       window.removeEventListener(offlineEvent, updatePending);
       window.removeEventListener(syncEvent, refresh);
+      window.removeEventListener("storage", storage);
     };
   }, [role]);
   const [tab, setTab] = useState<"list" | "create">("list");
@@ -519,9 +528,17 @@ function TaskBoard({ role, childId }: { role: Role; childId?: string }) {
             <button
               className={secondaryButton}
               disabled={busy}
-              onClick={() => {
+              onClick={async () => {
+                setBusy(true);
                 setError("");
-                setVersion((v) => v + 1);
+                try {
+                  await replayOfflineOperations();
+                } catch (e) {
+                  report(e);
+                } finally {
+                  setVersion((v) => v + 1);
+                  setBusy(false);
+                }
               }}
             >
               一覧を更新
@@ -567,10 +584,7 @@ function TaskBoard({ role, childId }: { role: Role; childId?: string }) {
                           {status === "WAIT_REVIEW" && (
                             <button
                               className={`${buttonClass} bg-green-400 text-[#5C410E] enabled:hover:bg-green-500`}
-                              disabled={
-                                busy ||
-                                pending.some((entry) => entry.path === `/tasks/${task.id}/status`)
-                              }
+                              disabled={busy}
                               onClick={() => mutate(task, "DONE")}
                             >
                               承認
@@ -604,10 +618,7 @@ function TaskBoard({ role, childId }: { role: Role; childId?: string }) {
                           {status === "TODO" && task.childId === null && (
                             <button
                               className={primaryButton}
-                              disabled={
-                                busy ||
-                                pending.some((entry) => entry.path === `/tasks/${task.id}/status`)
-                              }
+                              disabled={busy}
                               onClick={() => mutate(task, "IN_PROGRESS")}
                             >
                               はじめる

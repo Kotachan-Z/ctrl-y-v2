@@ -42,8 +42,9 @@ export async function api<T>(
       method !== "PATCH" ||
       !/^\/tasks\/[^/]+\/status$/.test(path) ||
       !token ||
-      !options.role ||
-      !body
+      options.role !== "child" ||
+      !body ||
+      !isCompletionReport(options.role, body)
     )
       throw error;
     const entry: QueuedOperation = {
@@ -55,6 +56,7 @@ export async function api<T>(
       created: Date.now(),
     };
     // If persistence fails, report the error instead of claiming the operation was saved.
+    if (tokens.get(options.role) !== token) throw error;
     localStorage.setItem(queuePrefix + entry.id, JSON.stringify(entry));
     notifyOffline("オフラインのため送信待ちです");
     // Callers of the status endpoint explicitly handle the queued response.
@@ -83,6 +85,23 @@ type QueuedOperation = {
   created: number;
 };
 const queuePrefix = "ctrl-y.offline-status.";
+export function isOfflineQueueKey(key: string | null) {
+  return key === null || key.startsWith(queuePrefix);
+}
+function isCompletionReport(role: Role, body: string) {
+  try {
+    const data = JSON.parse(body);
+    return (
+      role === "child" &&
+      data !== null &&
+      typeof data === "object" &&
+      data.status === "WAIT_REVIEW" &&
+      Object.keys(data).length === 1
+    );
+  } catch {
+    return false;
+  }
+}
 export const offlineEvent = "ctrl-y-offline";
 export const syncEvent = "ctrl-y-synced";
 function readQueue(): QueuedOperation[] {
@@ -133,6 +152,12 @@ export function replayOfflineOperations(): Promise<void> {
   if (replay) return replay;
   async function drain() {
     for (const entry of pendingOperations()) {
+      // Discard operations saved by older versions that queued other transitions.
+      if (!isCompletionReport(entry.role, entry.body)) {
+        localStorage.removeItem(queuePrefix + entry.id);
+        notifyOffline("完了報告以外の古い送信待ち操作を破棄しました");
+        continue;
+      }
       // Recheck after each await: logout/account switching can happen during replay.
       if (tokens.get(entry.role) !== entry.token || !localStorage.getItem(queuePrefix + entry.id))
         continue;
@@ -168,6 +193,13 @@ export function startOfflineReplay() {
     );
   };
   window.addEventListener("online", retry);
+  const visible = () => {
+    if (document.visibilityState === "visible") retry();
+  };
+  document.addEventListener("visibilitychange", visible);
   retry();
-  return () => window.removeEventListener("online", retry);
+  return () => {
+    window.removeEventListener("online", retry);
+    document.removeEventListener("visibilitychange", visible);
+  };
 }

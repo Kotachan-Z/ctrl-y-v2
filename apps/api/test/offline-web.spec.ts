@@ -5,6 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import {
   api,
+  type Role,
   pendingOperations,
   replayOfflineOperations,
   startOfflineReplay,
@@ -26,6 +27,7 @@ describe("offline status queue", () => {
       removeItem: (key: string) => storage.delete(key),
     });
     vi.stubGlobal("window", new EventTarget());
+    vi.stubGlobal("document", Object.assign(new EventTarget(), { visibilityState: "visible" }));
     vi.stubGlobal("navigator", {});
     vi.stubGlobal("fetch", fetchMock);
     fetchMock.mockReset();
@@ -77,6 +79,88 @@ describe("offline status queue", () => {
     fetchMock.mockRejectedValue(new TypeError("Failed to fetch"));
     await expect(api("/tasks", { role: "child", method: "POST", body: {} })).rejects.toThrow();
     expect(pendingOperations()).toHaveLength(0);
+  });
+  it.each<[Role, string]>([
+    ["child", "IN_PROGRESS"],
+    ["child", "DONE"],
+    ["parent", "DONE"],
+    ["parent", "WAIT_REVIEW"],
+  ])("does not queue %s transitions to %s", async (role, status) => {
+    tokens.set(role, `${role}-token`);
+    fetchMock.mockRejectedValue(new TypeError("offline"));
+    await expect(
+      api("/tasks/task-id/status", {
+        role,
+        method: "PATCH",
+        body: { status },
+      }),
+    ).rejects.toThrow("offline");
+    expect(pendingOperations()).toHaveLength(0);
+  });
+  it.each(["logout", "switch"])("does not save a pending request after %s", async (action) => {
+    let rejectFetch!: (reason: Error) => void;
+    fetchMock.mockImplementation(
+      () =>
+        new Promise((_resolve, reject) => {
+          rejectFetch = reject;
+        }),
+    );
+    const request = change();
+    const assertion = expect(request).rejects.toThrow("offline");
+    if (action === "logout") tokens.remove("child");
+    else tokens.set("child", "other-child-token");
+    rejectFetch(new TypeError("offline"));
+    await assertion;
+    tokens.set("child", "child-token");
+    expect(pendingOperations()).toHaveLength(0);
+  });
+  it("discards legacy approvals, reopenings and starts without sending them", async () => {
+    tokens.set("parent", "parent-token");
+    for (const [id, role, status] of [
+      ["approval", "parent", "DONE"],
+      ["reopening", "parent", "WAIT_REVIEW"],
+      ["start", "child", "IN_PROGRESS"],
+    ]) {
+      localStorage.setItem(
+        `ctrl-y.offline-status.${id}`,
+        JSON.stringify({
+          id,
+          role,
+          token: `${role}-token`,
+          path: "/tasks/task-id/status",
+          body: JSON.stringify({ status }),
+          created: 1,
+        }),
+      );
+    }
+    await replayOfflineOperations();
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(pendingOperations()).toHaveLength(0);
+  });
+  it("retries when visible and removes the visibility listener on cleanup", async () => {
+    const stop = startOfflineReplay();
+    await replayOfflineOperations();
+    fetchMock.mockRejectedValue(new TypeError("offline"));
+    await change();
+    fetchMock.mockResolvedValue(Response.json({ ok: true }));
+    const calls = fetchMock.mock.calls.length;
+    Object.defineProperty(document, "visibilityState", { value: "hidden", configurable: true });
+    document.dispatchEvent(new Event("visibilitychange"));
+    expect(fetchMock).toHaveBeenCalledTimes(calls);
+    Object.defineProperty(document, "visibilityState", { value: "visible", configurable: true });
+    document.dispatchEvent(new Event("visibilitychange"));
+    await replayOfflineOperations();
+    expect(fetchMock).toHaveBeenCalledTimes(calls + 1);
+    expect(pendingOperations()).toHaveLength(0);
+    fetchMock.mockRejectedValue(new TypeError("offline"));
+    await change();
+    fetchMock.mockResolvedValue(Response.json({ ok: true }));
+    const beforeCleanup = fetchMock.mock.calls.length;
+    stop();
+    document.dispatchEvent(new Event("visibilitychange"));
+    window.dispatchEvent(new Event("online"));
+    expect(fetchMock).toHaveBeenCalledTimes(beforeCleanup);
+    expect(pendingOperations()).toHaveLength(1);
   });
   it("automatically replays at startup and online events, serializing concurrent triggers", async () => {
     fetchMock.mockRejectedValue(new TypeError("Failed to fetch"));
@@ -163,7 +247,7 @@ describe("service worker API cache", () => {
       });
       return result;
     };
-    return { fetchMock, request, responses };
+    return { fetchMock, request, responses, cache };
   }
   it.each([
     "/api/tasks",
@@ -185,6 +269,43 @@ describe("service worker API cache", () => {
     expect(await cached.json()).toEqual({ version: 2 });
     expect((await request(path, "child"))!.type).toBe("error");
     expect((await request(`${path}?different=1`))!.type).toBe("error");
+  });
+  it.each([200, 401])("serializes same-key requests and writes before HTTP %s", async (status) => {
+    const { fetchMock, request, cache } = worker();
+    let finishWrite!: () => void;
+    const originalPut = cache.put;
+    const put = vi.spyOn(cache, "put").mockImplementationOnce(async (key, response) => {
+      await new Promise<void>((resolve) => {
+        finishWrite = resolve;
+      });
+      await originalPut(key, response);
+    });
+    fetchMock.mockResolvedValueOnce(Response.json({ version: 1 }));
+    const first = request("/api/tasks");
+    await vi.waitFor(() => expect(put).toHaveBeenCalledTimes(1));
+    const second = request("/api/tasks");
+    // A different key can finish while this key's first cache write is blocked.
+    fetchMock.mockResolvedValueOnce(Response.json({ independent: true }));
+    await request("/api/children");
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    fetchMock.mockResolvedValueOnce(new Response(JSON.stringify({ version: 2 }), { status }));
+    finishWrite();
+    await first;
+    await second;
+    fetchMock.mockRejectedValue(new TypeError("offline"));
+    const cached = (await request("/api/tasks"))!;
+    if (status === 401) expect(cached.type).toBe("error");
+    else expect(await cached.json()).toEqual({ version: 2 });
+  });
+  it("continues after a failed cache write", async () => {
+    const { fetchMock, request, cache } = worker();
+    vi.spyOn(cache, "put").mockRejectedValueOnce(new Error("storage unavailable"));
+    fetchMock.mockResolvedValue(Response.json({ version: 1 }));
+    expect((await request("/api/tasks"))!.ok).toBe(true);
+    fetchMock.mockResolvedValue(Response.json({ version: 2 }));
+    await request("/api/tasks");
+    fetchMock.mockRejectedValue(new TypeError("offline"));
+    expect(await (await request("/api/tasks"))!.json()).toEqual({ version: 2 });
   });
   it("does not intercept out-of-scope paths or writes; returns HTTP failures directly", async () => {
     const { fetchMock, request } = worker();
