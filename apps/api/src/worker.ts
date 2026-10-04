@@ -1,6 +1,7 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 
 import { createProductionDatabase } from "@ctrl-y/database/production";
+import { getPath } from "hono/utils/url";
 
 import { createFailureLimiter } from "./rate-limit.js";
 import { createRepository, type AuthRepository } from "./repository.js";
@@ -31,7 +32,8 @@ function currentRequest() {
 
 export default {
   async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
-    const pathname = new URL(request.url).pathname;
+    // Use the router's decoding, including reserved characters and malformed escapes.
+    const pathname = getPath(request);
     if (pathname !== "/api" && !pathname.startsWith("/api/")) return env.ASSETS.fetch(request);
 
     // Keep in sync with the three limit() routes in server.ts. One IP budget

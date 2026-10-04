@@ -9,6 +9,7 @@ const mocks = vi.hoisted(() => ({
   repository: vi.fn(),
   app: vi.fn(),
   handle: vi.fn(),
+  useRealApp: false,
 }));
 vi.mock("@ctrl-y/database/production", () => ({ createProductionDatabase: mocks.database }));
 vi.mock("../src/repository.js", () => ({ createRepository: mocks.repository }));
@@ -17,7 +18,8 @@ vi.mock("../src/server.js", async (importOriginal) => {
   return {
     createApp: (options: Parameters<typeof createApp>[0]) => {
       mocks.app(options);
-      actual.createApp(options); // Exercise the real fail-fast JWT/VAPID validation.
+      const app = actual.createApp(options); // Exercise the real fail-fast JWT/VAPID validation.
+      if (mocks.useRealApp) return app;
       return { fetch: (request: Request) => mocks.handle(options, request) };
     },
   };
@@ -26,6 +28,7 @@ vi.mock("../src/server.js", async (importOriginal) => {
 beforeEach(() => {
   vi.resetModules();
   vi.resetAllMocks();
+  mocks.useRealApp = false;
   mocks.repository.mockImplementation((db) => db);
   mocks.handle.mockResolvedValue(new Response("ok"));
 });
@@ -144,4 +147,110 @@ test("cleanup waits for background work even if the handler rejects", async () =
   release();
   await Promise.all(pending);
   expect(end).toHaveBeenCalledTimes(1);
+});
+
+const clientIp = "192.0.2.1";
+const childId = "00000000-0000-4000-8000-000000000001";
+const authPaths = ["/api/parents", "/api/parents/login", `/api/children/${childId}/login`];
+function authRequest(path: string, ip: string | undefined = clientIp) {
+  return new Request(`https://example.test${path}`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      ...(ip ? { "CF-Connecting-IP": ip } : {}),
+    },
+    body: JSON.stringify({ email: "worker@example.test", password: "password123" }),
+  });
+}
+function mockDatabase() {
+  const end = vi.fn().mockResolvedValue(undefined);
+  mocks.database.mockReturnValue({ db: {}, sql: { end } });
+  return end;
+}
+
+test("all authentication routes consume the same IP budget", async () => {
+  const { default: worker } = await import("../src/worker.js");
+  mockDatabase();
+  const counts = new Map<string, number>();
+  const limit = vi.fn<RateLimit["limit"]>(async ({ key }) => {
+    const count = (counts.get(key) ?? 0) + 1;
+    counts.set(key, count);
+    return { success: count <= 3 };
+  });
+  const env = { ...bindings(), AUTH_RATE_LIMITER: { limit } };
+  const { ctx, pending } = context();
+  for (const path of authPaths) {
+    expect((await worker.fetch(authRequest(path), env, ctx)).status).toBe(200);
+  }
+  for (const path of authPaths) {
+    expect((await worker.fetch(authRequest(path), env, ctx)).status).toBe(429);
+  }
+  expect(limit.mock.calls).toEqual(Array.from({ length: 6 }, () => [{ key: clientIp }]));
+  expect(mocks.database).toHaveBeenCalledTimes(3);
+  expect((await worker.fetch(authRequest(authPaths[0], "192.0.2.2"), env, ctx)).status).toBe(200);
+  await Promise.all(pending);
+});
+
+test.each([
+  ...authPaths,
+  "/api/parents/%6cogin",
+  "/api/%70arents",
+  "/%61pi/parents/login",
+  `/api/children/${childId}/%6cogin`,
+  // Hono tolerates malformed escapes and still matches this dynamic segment.
+  "/api/children/%ZZ/%6cogin",
+])("IP rejection blocks %s before app or database creation", async (path) => {
+  const { default: worker } = await import("../src/worker.js");
+  const limit = vi.fn<RateLimit["limit"]>().mockResolvedValue({ success: false });
+  const env = { ...bindings(), AUTH_RATE_LIMITER: { limit } };
+  const response = await worker.fetch(authRequest(path), env, context().ctx);
+  expect(response.status).toBe(429);
+  expect(response.headers.get("Retry-After")).toBe("60");
+  expect(response.headers.get("Cache-Control")).toBe("no-store");
+  expect(limit).toHaveBeenCalledExactlyOnceWith({ key: clientIp });
+  expect(mocks.app).not.toHaveBeenCalled();
+  expect(mocks.database).not.toHaveBeenCalled();
+  expect(mocks.repository).not.toHaveBeenCalled();
+  expect(mocks.handle).not.toHaveBeenCalled();
+});
+
+test.each(["binding", "IP"])("missing %s skips the IP limiter", async (missing) => {
+  const { default: worker } = await import("../src/worker.js");
+  const end = mockDatabase();
+  const limit = vi.fn<RateLimit["limit"]>().mockResolvedValue({ success: false });
+  const env: Env = bindings();
+  if (missing !== "binding") env.AUTH_RATE_LIMITER = { limit };
+  const { ctx, pending } = context();
+  const response = await worker.fetch(
+    authRequest("/api/parents/login", missing === "IP" ? "" : clientIp),
+    env,
+    ctx,
+  );
+  expect(response.status).toBe(200);
+  expect(limit).not.toHaveBeenCalled();
+  expect(mocks.database).toHaveBeenCalledTimes(1);
+  expect(mocks.repository).toHaveBeenCalledTimes(1);
+  expect(mocks.handle).toHaveBeenCalledTimes(1);
+  await Promise.all(pending);
+  expect(end).toHaveBeenCalledTimes(1);
+});
+
+test("identifier failures persist across real app instances in one isolate", async () => {
+  const { default: worker } = await import("../src/worker.js");
+  mocks.useRealApp = true;
+  mockDatabase();
+  const parentByEmail = vi.fn().mockResolvedValue(null);
+  mocks.repository.mockReturnValue({ parentByEmail });
+  const limit = vi.fn<RateLimit["limit"]>().mockResolvedValue({ success: true });
+  const env = { ...bindings(), AUTH_RATE_LIMITER: { limit } };
+  const { ctx, pending } = context();
+  for (let i = 0; i < 6; i += 1) {
+    const path = i % 2 === 0 ? "/api/parents/login" : "/api/parents/%6cogin";
+    const response = await worker.fetch(authRequest(path), env, ctx);
+    expect(response.status).toBe(i < 5 ? 401 : 429);
+  }
+  expect(parentByEmail).toHaveBeenCalledTimes(5);
+  expect(mocks.app).toHaveBeenCalledTimes(6);
+  expect(limit).toHaveBeenCalledTimes(6);
+  await Promise.all(pending);
 });
