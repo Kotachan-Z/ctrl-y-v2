@@ -2,10 +2,14 @@ import { AsyncLocalStorage } from "node:async_hooks";
 
 import { createProductionDatabase } from "@ctrl-y/database/production";
 
+import { createFailureLimiter } from "./rate-limit.js";
 import { createRepository, type AuthRepository } from "./repository.js";
 import { createApp } from "./server.js";
 
 export interface Env {
+  RESEND_API_KEY?: string;
+  RESEND_FROM_EMAIL?: string;
+  WEB_ORIGIN?: string;
   ASSETS: Fetcher;
   HYPERDRIVE: Hyperdrive;
   JWT_SECRET: string;
@@ -13,6 +17,8 @@ export interface Env {
   VAPID_PRIVATE_KEY: string;
   VAPID_SUBJECT: string;
 }
+
+const resetLimit = createFailureLimiter(true);
 
 const requests = new AsyncLocalStorage<{
   repository: AuthRepository;
@@ -30,6 +36,12 @@ export default {
     if (pathname !== "/api" && !pathname.startsWith("/api/")) return env.ASSETS.fetch(request);
 
     const app = createApp({
+      resetLimit,
+      resetMail: {
+        apiKey: env.RESEND_API_KEY,
+        from: env.RESEND_FROM_EMAIL,
+        webOrigin: env.WEB_ORIGIN ?? "",
+      },
       jwtSecret: env.JWT_SECRET ?? "",
       vapid: {
         publicKey: env.VAPID_PUBLIC_KEY ?? "",

@@ -4,6 +4,13 @@ import { bodyLimit } from "hono/body-limit";
 import { HTTPException } from "hono/http-exception";
 
 import { authenticate, familyId, isUuid, issueToken, parentOnly, type AuthEnv } from "./auth.js";
+import {
+  issueResetToken,
+  readResetToken,
+  tokenDigest,
+  sendResetEmail,
+  type ResetMailConfig,
+} from "./password-reset.js";
 import { notifyReview, readVapidConfig, validateVapidConfig, type VapidConfig } from "./push.js";
 import { createFailureLimiter } from "./rate-limit.js";
 import type { AuthRepository, PayrollSettings, TaskFields, TaskStatus } from "./repository.js";
@@ -227,6 +234,8 @@ export function createApp(options: {
   repository: AuthRepository | (() => AuthRepository);
   jwtSecret: string;
   vapid?: VapidConfig;
+  resetMail?: ResetMailConfig;
+  resetLimit?: ReturnType<typeof createFailureLimiter>;
   backgroundTask?: (task: Promise<void>) => void;
 }) {
   if (new TextEncoder().encode(options.jwtSecret).length < 32)
@@ -237,6 +246,7 @@ export function createApp(options: {
   const auth = authenticate(options.jwtSecret, repo);
   const app = new Hono<AuthEnv>();
   const limit = createFailureLimiter();
+  const resetLimit = options.resetLimit ?? createFailureLimiter(true);
   app.onError((error, c) => {
     if (error instanceof HTTPException) return c.json({ error: error.message }, error.status);
     console.error("API request failed", error);
@@ -311,6 +321,41 @@ export function createApp(options: {
         parent: { id: parent.id, email: parent.email },
         needsSetup: (await repo().listChildren(parent.id)).length === 0,
       });
+    });
+  });
+  app.post("/api/parents/password-reset/request", async (c) => {
+    const data = await body(c.req.raw);
+    const { email } = credentials({ email: data.email, password: "validation-only" });
+    return resetLimit(`reset-request:${email}`, async () => {
+      const delivery = async () => {
+        try {
+          const parent = await repo().parentByEmail(email);
+          if (!parent) return;
+          const { token, expiresAt } = await issueResetToken(parent.id, options.jwtSecret);
+          await sendResetEmail(email, token, options.resetMail);
+          await repo().savePasswordReset(parent.id, await tokenDigest(token), expiresAt);
+        } catch {
+          // Do not disclose account existence or log tokens/provider response bodies.
+          console.error("Password reset delivery failed");
+        }
+      };
+      const pending = delivery();
+      if (options.backgroundTask) options.backgroundTask(pending);
+      else await pending;
+      return c.json({ message: "登録されている場合、再設定用リンクを送信しました。" });
+    });
+  });
+  app.post("/api/parents/password-reset/confirm", async (c) => {
+    const data = await body(c.req.raw);
+    const digest = typeof data.token === "string" ? await tokenDigest(data.token) : "invalid";
+    return resetLimit(`reset-confirm:${digest}`, async () => {
+      const password = secretText(data.password, 8, "パスワード");
+      const parentId = await readResetToken(data.token, options.jwtSecret);
+      if (!parentId || typeof data.token !== "string")
+        return c.json({ error: "リンクが無効か期限切れです。再発行してください" }, 401);
+      const changed = await repo().resetPassword(parentId, digest, await hash(password, 12));
+      if (!changed) return c.json({ error: "リンクが無効か期限切れです。再発行してください" }, 401);
+      return c.json({ success: true });
     });
   });
   app.post("/api/setup", auth, parentOnly, async (c) => {
