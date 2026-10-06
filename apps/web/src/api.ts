@@ -171,7 +171,10 @@ export async function api<T>(
     const entry: QueuedOperation = {
       id: crypto.randomUUID(),
       path,
-      body,
+      // isCompletionReport() above already proved body is exactly this literal;
+      // reconstruct it fresh instead of storing the caller-supplied value, since
+      // api() is a generic function other callers also pass sensitive bodies to.
+      body: JSON.stringify({ status: "WAIT_REVIEW" }),
       sessionId,
       role: options.role,
       created: Date.now(),
