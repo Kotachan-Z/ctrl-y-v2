@@ -12,6 +12,10 @@ import {
   tokens,
 } from "../../web/src/api";
 
+const jwt = (role: Role = "child", id: string = role, version = "old", parentId = "family") =>
+  `header.${Buffer.from(JSON.stringify({ role, sub: id, parentId, jti: version })).toString("base64url")}.signature`;
+const childToken = jwt();
+
 // Exercise the browser client with the existing Vitest runner; no DOM rendering is needed.
 describe("offline status queue", () => {
   const fetchMock = vi.fn<typeof fetch>();
@@ -31,7 +35,7 @@ describe("offline status queue", () => {
     vi.stubGlobal("navigator", {});
     vi.stubGlobal("fetch", fetchMock);
     fetchMock.mockReset();
-    tokens.set("child", "child-token");
+    tokens.set("child", childToken, "refresh-child");
   });
   afterEach(() => vi.unstubAllGlobals());
   const change = () =>
@@ -53,12 +57,12 @@ describe("offline status queue", () => {
       "/api/tasks/task-id/status",
       expect.objectContaining({
         method: "PATCH",
-        headers: expect.objectContaining({ Authorization: "Bearer child-token" }),
+        headers: expect.objectContaining({ Authorization: `Bearer ${childToken}` }),
         body: JSON.stringify({ status: "WAIT_REVIEW" }),
       }),
     );
   });
-  it.each([400, 401, 404, 409, 500])(
+  it.each([400, 404, 409, 500])(
     "discards HTTP %s on replay and notifies failure",
     async (status) => {
       fetchMock.mockRejectedValue(new TypeError("Failed to fetch"));
@@ -73,6 +77,142 @@ describe("offline status queue", () => {
       );
     },
   );
+  it("stores only identity and replays with a rotated current token", async () => {
+    fetchMock.mockRejectedValue(new TypeError("offline"));
+    await change();
+    const entry = pendingOperations()[0];
+    const stored = localStorage.getItem(`ctrl-y.offline-status.${entry.id}`)!;
+    expect(JSON.parse(stored)).toMatchObject({
+      owner: { role: "child", id: "child", parentId: "family" },
+    });
+    expect(stored).not.toContain(childToken);
+    expect(JSON.parse(stored)).not.toHaveProperty("token");
+    const rotated = jwt("child", "child", "new");
+    tokens.set("child", rotated, "new-refresh");
+    expect(pendingOperations("child")).toHaveLength(1);
+    expect(pendingOperations("parent")).toHaveLength(0);
+    fetchMock.mockResolvedValue(Response.json({ ok: true }));
+    await replayOfflineOperations();
+    expect(fetchMock.mock.lastCall?.[1]?.headers).toMatchObject({
+      Authorization: `Bearer ${rotated}`,
+    });
+    expect(pendingOperations()).toHaveLength(0);
+  });
+  it.each([200, 401, 500])("replay refreshes once and handles retry HTTP %s", async (status) => {
+    fetchMock.mockRejectedValue(new TypeError("offline"));
+    await change();
+    fetchMock.mockReset();
+    const rotated = jwt("child", "child", "new");
+    fetchMock
+      .mockResolvedValueOnce(Response.json({}, { status: 401 }))
+      .mockResolvedValueOnce(Response.json({ token: rotated, refreshToken: "new-refresh" }))
+      .mockResolvedValueOnce(Response.json({}, { status }));
+    await replayOfflineOperations();
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+    expect(fetchMock.mock.lastCall?.[1]?.headers).toMatchObject({
+      Authorization: `Bearer ${rotated}`,
+    });
+    expect(pendingOperations()).toHaveLength(status === 200 ? 0 : 1);
+  });
+  it.each([401, 503])("retains queued work when refresh fails with %s", async (status) => {
+    fetchMock.mockRejectedValue(new TypeError("offline"));
+    await change();
+    fetchMock.mockReset();
+    fetchMock
+      .mockResolvedValueOnce(Response.json({}, { status: 401 }))
+      .mockResolvedValueOnce(Response.json({}, { status }));
+    await replayOfflineOperations();
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(pendingOperations()).toHaveLength(1);
+  });
+  it("queues a network failure after a successful refresh", async () => {
+    fetchMock
+      .mockResolvedValueOnce(Response.json({}, { status: 401 }))
+      .mockResolvedValueOnce(
+        Response.json({ token: jwt("child", "child", "new"), refreshToken: "new-refresh" }),
+      )
+      .mockRejectedValueOnce(new TypeError("offline"));
+    expect(await change()).toEqual({ queued: true });
+    expect(pendingOperations()).toHaveLength(1);
+  });
+  it("rejects unidentifiable tokens", async () => {
+    tokens.set("child", "malformed", "refresh");
+    fetchMock.mockRejectedValue(new TypeError("offline"));
+    await expect(change()).rejects.toThrow("offline");
+    expect(pendingOperations()).toHaveLength(0);
+  });
+  it("does not retry under a different family after refresh", async () => {
+    fetchMock.mockRejectedValue(new TypeError("offline"));
+    await change();
+    fetchMock.mockReset();
+    fetchMock
+      .mockResolvedValueOnce(Response.json({}, { status: 401 }))
+      .mockImplementationOnce(async () => {
+        tokens.set("child", jwt("child", "child", "new", "another-family"), "another-refresh");
+        return Response.json({ token: jwt("child", "child", "new"), refreshToken: "new-refresh" });
+      });
+    await replayOfflineOperations();
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(pendingOperations()).toHaveLength(0);
+    tokens.set("child", childToken, "refresh-child");
+    expect(pendingOperations()).toHaveLength(1);
+  });
+  it("logout after rotation removes only that owner's queued work and both credentials", async () => {
+    fetchMock.mockRejectedValue(new TypeError("offline"));
+    await change();
+    tokens.set("child", jwt("child", "another"), "another-refresh");
+    await change();
+    tokens.set("child", jwt("child", "child", "new"), "new-refresh");
+    tokens.remove("child");
+    expect(tokens.get("child")).toBeNull();
+    expect(tokens.getRefresh("child")).toBeNull();
+    tokens.set("child", childToken, "refresh-child");
+    expect(pendingOperations()).toHaveLength(0);
+    tokens.set("child", jwt("child", "another"), "another-refresh");
+    expect(pendingOperations()).toHaveLength(1);
+  });
+  it("rejects invalid stored owners and legacy bearer entries", () => {
+    for (const [index, owner] of [
+      null,
+      {},
+      { role: "child", id: "" },
+      { role: "child", id: "child", parentId: 1 },
+      { role: "parent", id: "child" },
+    ].entries()) {
+      localStorage.setItem(
+        `ctrl-y.offline-status.invalid-${index}`,
+        JSON.stringify({
+          id: `invalid-${index}`,
+          owner,
+          role: "child",
+          path: "/tasks/task-id/status",
+          body: JSON.stringify({ status: "WAIT_REVIEW" }),
+          created: 1,
+        }),
+      );
+    }
+    localStorage.setItem(
+      "ctrl-y.offline-status.legacy",
+      JSON.stringify({
+        id: "legacy",
+        token: childToken,
+        role: "child",
+        path: "/tasks/task-id/status",
+        body: JSON.stringify({ status: "WAIT_REVIEW" }),
+        created: 1,
+      }),
+    );
+    expect(pendingOperations()).toHaveLength(0);
+  });
+  it("dispatches cache notifications for successful cached responses", async () => {
+    const listener = vi.fn();
+    window.addEventListener("ctrl-y-cached", listener);
+    fetchMock.mockResolvedValue(
+      Response.json({ tasks: [] }, { headers: { "X-Ctrl-Y-Offline": "1" } }),
+    );
+    await expect(api("/tasks", { role: "child" })).resolves.toEqual({ tasks: [] });
+    expect(listener).toHaveBeenCalledTimes(1);
+  });
   it("does not queue direct HTTP errors or other writes", async () => {
     fetchMock.mockResolvedValue(Response.json({ error: "conflict" }, { status: 409 }));
     await expect(change()).rejects.toThrow("conflict");
@@ -86,7 +226,7 @@ describe("offline status queue", () => {
     ["parent", "DONE"],
     ["parent", "WAIT_REVIEW"],
   ])("does not queue %s transitions to %s", async (role, status) => {
-    tokens.set(role, `${role}-token`);
+    tokens.set(role, jwt(role), "refresh");
     fetchMock.mockRejectedValue(new TypeError("offline"));
     await expect(
       api("/tasks/task-id/status", {
@@ -108,14 +248,14 @@ describe("offline status queue", () => {
     const request = change();
     const assertion = expect(request).rejects.toThrow("offline");
     if (action === "logout") tokens.remove("child");
-    else tokens.set("child", "other-child-token");
+    else tokens.set("child", jwt("child", "other"), "refresh-other");
     rejectFetch(new TypeError("offline"));
     await assertion;
-    tokens.set("child", "child-token");
+    tokens.set("child", childToken, "refresh-child");
     expect(pendingOperations()).toHaveLength(0);
   });
   it("discards legacy approvals, reopenings and starts without sending them", async () => {
-    tokens.set("parent", "parent-token");
+    tokens.set("parent", jwt("parent"), "refresh-parent");
     for (const [id, role, status] of [
       ["approval", "parent", "DONE"],
       ["reopening", "parent", "WAIT_REVIEW"],
@@ -126,7 +266,7 @@ describe("offline status queue", () => {
         JSON.stringify({
           id,
           role,
-          token: `${role}-token`,
+          owner: { role, id: role, ...(role === "child" ? { parentId: "family" } : {}) },
           path: "/tasks/task-id/status",
           body: JSON.stringify({ status }),
           created: 1,
@@ -191,14 +331,14 @@ describe("offline status queue", () => {
   it("never replays another token's operations and removes pending work on logout", async () => {
     fetchMock.mockRejectedValue(new TypeError("Failed to fetch"));
     await change();
-    tokens.set("child", "another-token");
+    tokens.set("child", jwt("child", "another"), "refresh-another");
     fetchMock.mockClear();
     await replayOfflineOperations();
     expect(fetchMock).not.toHaveBeenCalled();
-    tokens.set("child", "child-token");
+    tokens.set("child", childToken, "refresh-child");
     expect(pendingOperations()).toHaveLength(1);
     tokens.remove("child");
-    tokens.set("child", "child-token");
+    tokens.set("child", childToken, "refresh-child");
     expect(pendingOperations()).toHaveLength(0);
   });
 });

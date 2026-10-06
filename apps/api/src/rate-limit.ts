@@ -4,7 +4,7 @@ import { HTTPException } from "hono/http-exception";
 export const FAILURE_LIMITER_MAX_ENTRIES = 10_000;
 
 // Per isolate only: multiple Workers isolates do not share these counters.
-export function createFailureLimiter() {
+export function createFailureLimiter(countAll = false) {
   const entries = new Map<string, { failures: number; inFlight: number; expiresAt: number }>();
   // Insertion order tracks when entries became idle; eviction also checks lockout expiry.
   const idle = new Set<string>();
@@ -17,28 +17,43 @@ export function createFailureLimiter() {
     let entry = entries.get(key);
     if (!entry) {
       if (entries.size >= FAILURE_LIMITER_MAX_ENTRIES) {
+        let victim: string | undefined;
+        let fewestFailures = 5;
         for (const candidate of idle) {
           const idleEntry = entries.get(candidate)!;
-          if (idleEntry.failures >= 5 && idleEntry.expiresAt > now) continue;
-          idle.delete(candidate);
-          entries.delete(candidate);
-          break;
+          if (idleEntry.expiresAt <= now) {
+            victim = candidate;
+            break;
+          }
+          // Preserve accumulated failures over one-off throwaway identifiers.
+          // Ties use the oldest idle entry.
+          if (idleEntry.failures < fewestFailures) {
+            victim = candidate;
+            fewestFailures = idleEntry.failures;
+          }
         }
-        if (entries.size >= FAILURE_LIMITER_MAX_ENTRIES) return reject();
+        // Availability wins when every entry is locked (or still in flight).
+        victim ??= idle.values().next().value ?? entries.keys().next().value;
+        if (victim !== undefined) {
+          idle.delete(victim);
+          entries.delete(victim);
+        }
       }
       entry = { failures: 0, inFlight: 0, expiresAt: now + duration };
       entries.set(key, entry);
     }
-    // Expire on access; capacity eviction skips idle entries with active lockouts.
+    // Expire on access; capacity pressure may release locks early.
     if (entry.expiresAt <= now) {
       entry.failures = 0;
       entry.expiresAt = now + duration;
     }
-    if (entry.failures + entry.inFlight >= 5) return reject();
+    if (entry.failures + (countAll ? 0 : entry.inFlight) >= 5) return reject();
     idle.delete(key);
     entry.inFlight += 1;
+    if (countAll) entry.failures += 1;
     try {
       const response = await attempt();
+      if (countAll) return response;
       if (response.ok) entry.failures = 0;
       else if (response.status === 401 || response.status === 409) {
         const finishedAt = Date.now();
@@ -52,7 +67,7 @@ export function createFailureLimiter() {
       return response;
     } finally {
       entry.inFlight -= 1;
-      if (entry.inFlight === 0) {
+      if (entry.inFlight === 0 && entries.get(key) === entry) {
         if (entry.failures === 0) entries.delete(key);
         else idle.add(key);
       }

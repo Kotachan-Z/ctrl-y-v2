@@ -20,6 +20,8 @@ export const parents = pgTable("parents", {
   id: uuid().primaryKey().defaultRandom(),
   email: text().notNull().unique(),
   passwordHash: text().notNull(),
+  passwordResetHash: text(),
+  passwordResetExpiresAt: timestamp({ withTimezone: true }),
   // Empty until setup; thereafter bcrypt hash of the shared passphrase.
   keyword: text().notNull().default(""),
   cutoffDay: boolean().notNull().default(false),
@@ -87,5 +89,60 @@ export const payroll = pgTable(
     unique("payroll_child_month_unique").on(t.childId, t.month),
     check("payroll_month_start", sql`extract(day from ${t.month}) = 1`),
     check("payroll_nonnegative", sql`${t.completedTaskCount} >= 0 and ${t.totalReward} >= 0`),
+  ],
+);
+
+export const pushRetryQueue = pgTable(
+  "push_retry_queue",
+  {
+    id: uuid().primaryKey().defaultRandom(),
+    parentId: uuid()
+      .notNull()
+      .references(() => parents.id, { onDelete: "cascade" }),
+    taskName: text().notNull(),
+    attempts: integer().notNull().default(0),
+    nextAttemptAt: timestamp({ withTimezone: true }).notNull(),
+    createdAt: createdAt(),
+    lastError: text().notNull(),
+  },
+  (t) => [
+    index("push_retry_due_idx").on(t.nextAttemptAt, t.id),
+    index("push_retry_parent_idx").on(t.parentId),
+    check("push_retry_attempts_nonnegative", sql`${t.attempts} >= 0`),
+  ],
+);
+
+// parentId is the family for both roles; a child session must belong to that family.
+export const refreshTokens = pgTable(
+  "refresh_tokens",
+  {
+    id: uuid().primaryKey(),
+    role: text().$type<"parent" | "child">().notNull(),
+    parentId: uuid()
+      .notNull()
+      .references(() => parents.id, { onDelete: "cascade" }),
+    childId: uuid(),
+    tokenHash: text().notNull().unique(),
+    createdAt: createdAt(),
+    expiresAt: timestamp({ withTimezone: true }).notNull(),
+    revokedAt: timestamp({ withTimezone: true }),
+    // The initial row points to itself and is the lock shared by every rotation.
+    rootId: uuid().notNull(),
+    previousId: uuid().unique(),
+  },
+  (t) => [
+    index("refresh_tokens_root_idx").on(t.rootId),
+    index("refresh_tokens_parent_idx").on(t.parentId),
+    index("refresh_tokens_child_idx").on(t.childId),
+    foreignKey({
+      columns: [t.childId, t.parentId],
+      foreignColumns: [children.id, children.parentId],
+    }).onDelete("cascade"),
+    foreignKey({ columns: [t.rootId], foreignColumns: [t.id] }).onDelete("cascade"),
+    foreignKey({ columns: [t.previousId], foreignColumns: [t.id] }).onDelete("cascade"),
+    check(
+      "refresh_tokens_role_owner",
+      sql`(${t.role} = 'parent' and ${t.childId} is null) or (${t.role} = 'child' and ${t.childId} is not null)`,
+    ),
   ],
 );

@@ -20,6 +20,7 @@ import {
 
 import {
   api,
+  logout,
   ApiError,
   tokens,
   offlineEvent,
@@ -107,12 +108,14 @@ function Field({
   type = "text",
   minLength,
   maxLength,
+  autoComplete,
 }: {
   name: string;
   label: string;
   type?: string;
   minLength?: number;
   maxLength?: number;
+  autoComplete?: string;
 }) {
   return (
     <label className="grid min-w-0 gap-2 font-semibold">
@@ -124,7 +127,10 @@ function Field({
         required
         minLength={minLength}
         maxLength={maxLength}
-        autoComplete={name === "email" ? "email" : name === "password" ? "current-password" : "off"}
+        autoComplete={
+          autoComplete ??
+          (name === "email" ? "email" : name === "password" ? "current-password" : "off")
+        }
       />
     </label>
   );
@@ -137,11 +143,11 @@ function ParentLogin({ signup = false }: { signup?: boolean }) {
       <Form
         label={signup ? "登録する" : "ログイン"}
         submit={async (data) => {
-          const result = await api<{ token: string; needsSetup: boolean }>(
+          const result = await api<{ token: string; refreshToken: string; needsSetup: boolean }>(
             signup ? "/parents" : "/parents/login",
             { body: { email: data.get("email"), password: data.get("password") } },
           );
-          tokens.set("parent", result.token);
+          tokens.set("parent", result.token, result.refreshToken);
           void navigate(result.needsSetup ? "/setup" : "/top", { replace: true });
         }}
       >
@@ -149,8 +155,74 @@ function ParentLogin({ signup = false }: { signup?: boolean }) {
         <Field name="password" label="パスワード" type="password" minLength={8} />
         <p>パスワードは8文字以上です。</p>
       </Form>
+      {!signup && (
+        <Link className={linkClass} to="/forgot-password">
+          パスワードを忘れた場合
+        </Link>
+      )}
       <Link className={linkClass} to={signup ? "/" : "/signup"}>
         {signup ? "ログインへ" : "新規登録へ"}
+      </Link>
+    </AuthLayout>
+  );
+}
+function PasswordReset({ confirm = false }: { confirm?: boolean }) {
+  const { token } = useParams();
+  const [done, setDone] = useState(false);
+  return (
+    <AuthLayout>
+      <h1>{confirm ? "パスワードの再設定" : "パスワードを忘れた場合"}</h1>
+      {done ? (
+        <p role="status">
+          {confirm
+            ? "パスワードを変更しました。新しいパスワードでログインしてください。"
+            : "登録されている場合、再設定用リンクを送信しました。メールをご確認ください。"}
+        </p>
+      ) : (
+        <Form
+          label={confirm ? "パスワードを変更" : "再設定リンクを送信"}
+          submit={async (data) => {
+            if (confirm && data.get("password") !== data.get("confirmation"))
+              throw new Error("パスワードが一致しません");
+            await api(`/parents/password-reset/${confirm ? "confirm" : "request"}`, {
+              body: confirm
+                ? { token, password: data.get("password") }
+                : { email: data.get("email") },
+            });
+            if (confirm) tokens.remove("parent");
+            setDone(true);
+          }}
+        >
+          {confirm ? (
+            <>
+              <Field
+                name="password"
+                label="新しいパスワード"
+                type="password"
+                minLength={8}
+                autoComplete="new-password"
+              />
+              <Field
+                name="confirmation"
+                label="新しいパスワード（確認）"
+                type="password"
+                minLength={8}
+                autoComplete="new-password"
+              />
+              <p>8文字以上・UTF-8で72バイト以内。リンクの有効期限は15分です。</p>
+            </>
+          ) : (
+            <Field name="email" label="メールアドレス" type="email" maxLength={254} />
+          )}
+        </Form>
+      )}
+      {confirm && (
+        <Link className={linkClass} to="/forgot-password">
+          リンクを再発行する
+        </Link>
+      )}
+      <Link className={linkClass} to="/">
+        親ログインへ
       </Link>
     </AuthLayout>
   );
@@ -311,10 +383,13 @@ function ChildLogin() {
       <Form
         label="ログイン"
         submit={async (data) => {
-          const { token } = await api<{ token: string }>(`/children/${childId}/login`, {
-            body: { keyword: data.get("keyword") },
-          });
-          tokens.set("child", token);
+          const { token, refreshToken } = await api<{ token: string; refreshToken: string }>(
+            `/children/${childId}/login`,
+            {
+              body: { keyword: data.get("keyword") },
+            },
+          );
+          tokens.set("child", token, refreshToken);
           void navigate(`/child/top/${childId}`, { replace: true });
         }}
       >
@@ -1077,8 +1152,13 @@ function Top({ role }: { role: Role }) {
       <button
         className={neutralButton}
         onClick={() => {
-          tokens.remove(role);
-          void navigate(role === "parent" ? "/" : `/child/login/${childId}`, { replace: true });
+          void logout(role)
+            .then(() => {
+              void navigate(role === "parent" ? "/" : `/child/login/${childId}`, { replace: true });
+            })
+            .catch(() => {
+              window.alert("ログアウトに失敗しました。通信を確認して再試行してください。");
+            });
         }}
       >
         ログアウト
@@ -1169,6 +1249,8 @@ function App() {
       <OfflineStatus />
       <Routes>
         <Route path="/" element={<ParentLogin />} />
+        <Route path="/forgot-password" element={<PasswordReset key="request" />} />
+        <Route path="/reset-password/:token" element={<PasswordReset key="confirm" confirm />} />
         <Route path="/signup" element={<ParentLogin signup />} />
         <Route
           path="/setup"
