@@ -56,6 +56,7 @@ describe("parent and child authentication", () => {
     const data = await response.json();
     expect(data.parent.email).toBe(email);
     expect(data.needsSetup).toBe(true);
+    expect(data.refreshToken).toMatch(/^[0-9a-f]{64}$/);
     expect(JSON.stringify(data)).not.toContain("passwordHash");
     const parent = await fixture.repository.parentByEmail(email);
     expect(parent?.keyword).toBe("");
@@ -69,9 +70,11 @@ describe("parent and child authentication", () => {
       iss: "ctrl-y",
       aud: "ctrl-y-api",
     });
-    expect(Number(claims.exp) - Number(claims.iat)).toBe(86400);
+    expect(Number(claims.exp) - Number(claims.iat)).toBe(3600);
     expect((await request("/parents", { email, password })).status).toBe(409);
-    expect((await request("/parents/login", { email, password })).status).toBe(200);
+    const login = await request("/parents/login", { email, password });
+    expect(login.status).toBe(200);
+    expect((await login.json()).refreshToken).toMatch(/^[0-9a-f]{64}$/);
     expect(
       (await request("/parents/login", { email, password: "incorrect-password" })).status,
     ).toBe(401);
@@ -106,7 +109,8 @@ describe("parent and child authentication", () => {
     for (const child of [first, second]) {
       const login = await request(`/children/${child.id}/login`, { keyword });
       expect(login.status).toBe(200);
-      const { token } = await login.json();
+      const { token, refreshToken } = await login.json();
+      expect(refreshToken).toMatch(/^[0-9a-f]{64}$/);
       expect(await verify(token, secret, "HS256")).toMatchObject({
         sub: child.id,
         role: "child",
@@ -212,6 +216,7 @@ test("authentication rejects missing, tampered, expired, reset-purpose and malfo
   for (const override of [
     { purpose: "password-reset" },
     { exp: now - 1 },
+    { exp: now + 86400 },
     { role: "admin" },
     { exp: undefined },
     { iss: "other" },

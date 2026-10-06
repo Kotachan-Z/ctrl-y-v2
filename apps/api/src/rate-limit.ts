@@ -4,7 +4,7 @@ import { HTTPException } from "hono/http-exception";
 export const FAILURE_LIMITER_MAX_ENTRIES = 10_000;
 
 // Per isolate only: multiple Workers isolates do not share these counters.
-export function createFailureLimiter() {
+export function createFailureLimiter(countAll = false) {
   const entries = new Map<string, { failures: number; inFlight: number; expiresAt: number }>();
   // Insertion order tracks when entries became idle; eviction also checks lockout expiry.
   const idle = new Set<string>();
@@ -47,11 +47,13 @@ export function createFailureLimiter() {
       entry.failures = 0;
       entry.expiresAt = now + duration;
     }
-    if (entry.failures + entry.inFlight >= 5) return reject();
+    if (entry.failures + (countAll ? 0 : entry.inFlight) >= 5) return reject();
     idle.delete(key);
     entry.inFlight += 1;
+    if (countAll) entry.failures += 1;
     try {
       const response = await attempt();
+      if (countAll) return response;
       if (response.ok) entry.failures = 0;
       else if (response.status === 401 || response.status === 409) {
         const finishedAt = Date.now();

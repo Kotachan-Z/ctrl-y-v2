@@ -3,11 +3,15 @@ import { AsyncLocalStorage } from "node:async_hooks";
 import { createProductionDatabase } from "@ctrl-y/database/production";
 import { getPath } from "hono/utils/url";
 
+import { processPushRetries, validateVapidConfig } from "./push.js";
 import { createFailureLimiter } from "./rate-limit.js";
 import { createRepository, type AuthRepository } from "./repository.js";
 import { createApp } from "./server.js";
 
 export interface Env {
+  RESEND_API_KEY?: string;
+  RESEND_FROM_EMAIL?: string;
+  WEB_ORIGIN?: string;
   ASSETS: Fetcher;
   AUTH_RATE_LIMITER?: RateLimit;
   HYPERDRIVE: Hyperdrive;
@@ -17,8 +21,9 @@ export interface Env {
   VAPID_SUBJECT: string;
 }
 
-// Retain identifier counters across requests in this isolate.
+// Keep counters for the lifetime of this isolate, across per-request apps.
 const failureLimiter = createFailureLimiter();
+const resetLimit = createFailureLimiter(true);
 
 const requests = new AsyncLocalStorage<{
   repository: AuthRepository;
@@ -31,6 +36,19 @@ function currentRequest() {
 }
 
 export default {
+  async scheduled(_controller: ScheduledController, env: Env): Promise<void> {
+    const vapid = validateVapidConfig({
+      publicKey: env.VAPID_PUBLIC_KEY ?? "",
+      privateKey: env.VAPID_PRIVATE_KEY ?? "",
+      subject: env.VAPID_SUBJECT ?? "",
+    });
+    const { db, sql } = createProductionDatabase(env.HYPERDRIVE);
+    try {
+      await processPushRetries(createRepository(db), vapid);
+    } finally {
+      await sql.end();
+    }
+  },
   async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
     // Use the router's decoding, including reserved characters and malformed escapes.
     const pathname = getPath(request);
@@ -55,8 +73,14 @@ export default {
     }
 
     const app = createApp({
-      failureLimiter,
+      resetLimit,
+      resetMail: {
+        apiKey: env.RESEND_API_KEY,
+        from: env.RESEND_FROM_EMAIL,
+        webOrigin: env.WEB_ORIGIN ?? "",
+      },
       jwtSecret: env.JWT_SECRET ?? "",
+      failureLimiter,
       vapid: {
         publicKey: env.VAPID_PUBLIC_KEY ?? "",
         privateKey: env.VAPID_PRIVATE_KEY ?? "",
