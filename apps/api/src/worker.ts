@@ -1,6 +1,7 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 
 import { createProductionDatabase } from "@ctrl-y/database/production";
+import { getPath } from "hono/utils/url";
 
 import { processPushRetries, validateVapidConfig } from "./push.js";
 import { createFailureLimiter } from "./rate-limit.js";
@@ -12,6 +13,7 @@ export interface Env {
   RESEND_FROM_EMAIL?: string;
   WEB_ORIGIN?: string;
   ASSETS: Fetcher;
+  AUTH_RATE_LIMITER?: RateLimit;
   HYPERDRIVE: Hyperdrive;
   JWT_SECRET: string;
   VAPID_PUBLIC_KEY: string;
@@ -48,8 +50,27 @@ export default {
     }
   },
   async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
-    const pathname = new URL(request.url).pathname;
+    // Use the router's decoding, including reserved characters and malformed escapes.
+    const pathname = getPath(request);
     if (pathname !== "/api" && !pathname.startsWith("/api/")) return env.ASSETS.fetch(request);
+
+    // Keep in sync with the three limit() routes in server.ts. One IP budget
+    // spans all authentication routes, independent of identifiers and outcomes.
+    const isAuthRequest =
+      request.method === "POST" &&
+      (pathname === "/api/parents" ||
+        pathname === "/api/parents/login" ||
+        /^\/api\/children\/[^/]+\/login$/.test(pathname));
+    const ip = request.headers.get("CF-Connecting-IP");
+    if (isAuthRequest && env.AUTH_RATE_LIMITER && ip) {
+      const { success } = await env.AUTH_RATE_LIMITER.limit({ key: ip });
+      if (!success) {
+        return Response.json(
+          { error: "試行回数が多すぎます。60秒後に再試行してください" },
+          { status: 429, headers: { "Retry-After": "60", "Cache-Control": "no-store" } },
+        );
+      }
+    }
 
     const app = createApp({
       resetLimit,
