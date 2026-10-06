@@ -1,6 +1,6 @@
 {
-  "id": "941a8f2d-44e1-4f92-8419-55a4b0a74635",
-  "prevId": "05821522-1f12-43ec-afad-108ce2d6cfef",
+  "id": "05821522-1f12-43ec-afad-108ce2d6cfef",
+  "prevId": "d02c2f12-e767-482b-8acd-bb75e2b8901d",
   "version": "7",
   "dialect": "postgresql",
   "tables": {
@@ -105,6 +105,18 @@
           "primaryKey": false,
           "notNull": true
         },
+        "password_reset_hash": {
+          "name": "password_reset_hash",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "password_reset_expires_at": {
+          "name": "password_reset_expires_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
         "keyword": {
           "name": "keyword",
           "type": "text",
@@ -138,18 +150,6 @@
           "primaryKey": false,
           "notNull": true,
           "default": "now()"
-        },
-        "password_reset_hash": {
-          "name": "password_reset_hash",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "password_reset_expires_at": {
-          "name": "password_reset_expires_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": false
         }
       },
       "indexes": {},
@@ -249,266 +249,6 @@
         "payroll_nonnegative": {
           "name": "payroll_nonnegative",
           "value": "\"payroll\".\"completed_task_count\" >= 0 and \"payroll\".\"total_reward\" >= 0"
-        }
-      },
-      "isRLSEnabled": false
-    },
-    "public.push_retry_queue": {
-      "name": "push_retry_queue",
-      "schema": "",
-      "columns": {
-        "id": {
-          "name": "id",
-          "type": "uuid",
-          "primaryKey": true,
-          "notNull": true,
-          "default": "gen_random_uuid()"
-        },
-        "parent_id": {
-          "name": "parent_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "task_name": {
-          "name": "task_name",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "attempts": {
-          "name": "attempts",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": true,
-          "default": 0
-        },
-        "next_attempt_at": {
-          "name": "next_attempt_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "created_at": {
-          "name": "created_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "now()"
-        },
-        "last_error": {
-          "name": "last_error",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        }
-      },
-      "indexes": {
-        "push_retry_due_idx": {
-          "name": "push_retry_due_idx",
-          "columns": [
-            {
-              "expression": "next_attempt_at",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": false,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        },
-        "push_retry_parent_idx": {
-          "name": "push_retry_parent_idx",
-          "columns": [
-            {
-              "expression": "parent_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": false,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        }
-      },
-      "foreignKeys": {
-        "push_retry_queue_parent_id_parents_id_fk": {
-          "name": "push_retry_queue_parent_id_parents_id_fk",
-          "tableFrom": "push_retry_queue",
-          "tableTo": "parents",
-          "columnsFrom": [
-            "parent_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "cascade",
-          "onUpdate": "no action"
-        }
-      },
-      "compositePrimaryKeys": {},
-      "uniqueConstraints": {},
-      "policies": {},
-      "checkConstraints": {
-        "push_retry_attempts_nonnegative": {
-          "name": "push_retry_attempts_nonnegative",
-          "value": "\"push_retry_queue\".\"attempts\" >= 0"
-        }
-      },
-      "isRLSEnabled": false
-    },
-    "public.tasks": {
-      "name": "tasks",
-      "schema": "",
-      "columns": {
-        "id": {
-          "name": "id",
-          "type": "uuid",
-          "primaryKey": true,
-          "notNull": true,
-          "default": "gen_random_uuid()"
-        },
-        "parent_id": {
-          "name": "parent_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "child_id": {
-          "name": "child_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "name": {
-          "name": "name",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "memo": {
-          "name": "memo",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "reward": {
-          "name": "reward",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "deadline": {
-          "name": "deadline",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "status": {
-          "name": "status",
-          "type": "task_status",
-          "typeSchema": "public",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "'TODO'"
-        },
-        "completed_at": {
-          "name": "completed_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "created_at": {
-          "name": "created_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "now()"
-        }
-      },
-      "indexes": {
-        "tasks_parent_idx": {
-          "name": "tasks_parent_idx",
-          "columns": [
-            {
-              "expression": "parent_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": false,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        },
-        "tasks_child_idx": {
-          "name": "tasks_child_idx",
-          "columns": [
-            {
-              "expression": "child_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": false,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        }
-      },
-      "foreignKeys": {
-        "tasks_parent_id_parents_id_fk": {
-          "name": "tasks_parent_id_parents_id_fk",
-          "tableFrom": "tasks",
-          "tableTo": "parents",
-          "columnsFrom": [
-            "parent_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "cascade",
-          "onUpdate": "no action"
-        },
-        "tasks_child_id_parent_id_children_id_parent_id_fk": {
-          "name": "tasks_child_id_parent_id_children_id_parent_id_fk",
-          "tableFrom": "tasks",
-          "tableTo": "children",
-          "columnsFrom": [
-            "child_id",
-            "parent_id"
-          ],
-          "columnsTo": [
-            "id",
-            "parent_id"
-          ],
-          "onDelete": "no action",
-          "onUpdate": "no action"
-        }
-      },
-      "compositePrimaryKeys": {},
-      "uniqueConstraints": {},
-      "policies": {},
-      "checkConstraints": {
-        "tasks_reward_nonnegative": {
-          "name": "tasks_reward_nonnegative",
-          "value": "\"tasks\".\"reward\" >= 0"
-        },
-        "tasks_reward_max": {
-          "name": "tasks_reward_max",
-          "value": "\"tasks\".\"reward\" <= 1000000"
         }
       },
       "isRLSEnabled": false
@@ -704,6 +444,152 @@
         "refresh_tokens_role_owner": {
           "name": "refresh_tokens_role_owner",
           "value": "(\"refresh_tokens\".\"role\" = 'parent' and \"refresh_tokens\".\"child_id\" is null) or (\"refresh_tokens\".\"role\" = 'child' and \"refresh_tokens\".\"child_id\" is not null)"
+        }
+      },
+      "isRLSEnabled": false
+    },
+    "public.tasks": {
+      "name": "tasks",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true,
+          "default": "gen_random_uuid()"
+        },
+        "parent_id": {
+          "name": "parent_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "child_id": {
+          "name": "child_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "name": {
+          "name": "name",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "memo": {
+          "name": "memo",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "reward": {
+          "name": "reward",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "deadline": {
+          "name": "deadline",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "status": {
+          "name": "status",
+          "type": "task_status",
+          "typeSchema": "public",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'TODO'"
+        },
+        "completed_at": {
+          "name": "completed_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {
+        "tasks_parent_idx": {
+          "name": "tasks_parent_idx",
+          "columns": [
+            {
+              "expression": "parent_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "tasks_child_idx": {
+          "name": "tasks_child_idx",
+          "columns": [
+            {
+              "expression": "child_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "tasks_parent_id_parents_id_fk": {
+          "name": "tasks_parent_id_parents_id_fk",
+          "tableFrom": "tasks",
+          "tableTo": "parents",
+          "columnsFrom": [
+            "parent_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        },
+        "tasks_child_id_parent_id_children_id_parent_id_fk": {
+          "name": "tasks_child_id_parent_id_children_id_parent_id_fk",
+          "tableFrom": "tasks",
+          "tableTo": "children",
+          "columnsFrom": [
+            "child_id",
+            "parent_id"
+          ],
+          "columnsTo": [
+            "id",
+            "parent_id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {
+        "tasks_reward_nonnegative": {
+          "name": "tasks_reward_nonnegative",
+          "value": "\"tasks\".\"reward\" >= 0"
+        },
+        "tasks_reward_max": {
+          "name": "tasks_reward_max",
+          "value": "\"tasks\".\"reward\" <= 1000000"
         }
       },
       "isRLSEnabled": false
