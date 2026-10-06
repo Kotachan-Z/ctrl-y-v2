@@ -122,6 +122,7 @@ test("warm overlapping requests reconstruct the app and keep repositories and cl
   ]);
   await Promise.all([...a.pending, ...b.pending]);
   expect(mocks.app).toHaveBeenCalledTimes(2);
+  expect(mocks.app.mock.calls[0][0].failureLimiter).toBe(mocks.app.mock.calls[1][0].failureLimiter);
   expect(mocks.app.mock.calls[0][0].resetLimit).toBe(mocks.app.mock.calls[1][0].resetLimit);
   expect(first.sql.end).toHaveBeenCalledTimes(1);
   expect(second.sql.end).toHaveBeenCalledTimes(1);

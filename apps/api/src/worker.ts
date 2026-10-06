@@ -18,6 +18,8 @@ export interface Env {
   VAPID_SUBJECT: string;
 }
 
+// Keep counters for the lifetime of this isolate, across per-request apps.
+const failureLimiter = createFailureLimiter();
 const resetLimit = createFailureLimiter(true);
 
 const requests = new AsyncLocalStorage<{
@@ -43,6 +45,7 @@ export default {
         webOrigin: env.WEB_ORIGIN ?? "",
       },
       jwtSecret: env.JWT_SECRET ?? "",
+      failureLimiter,
       vapid: {
         publicKey: env.VAPID_PUBLIC_KEY ?? "",
         privateKey: env.VAPID_PRIVATE_KEY ?? "",
