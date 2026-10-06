@@ -18,7 +18,21 @@ import {
   useParams,
 } from "react-router-dom";
 
-import { api, logout, ApiError, tokens, type Child, type Identity, type Role } from "./api";
+import {
+  api,
+  logout,
+  ApiError,
+  tokens,
+  offlineEvent,
+  syncEvent,
+  pendingOperations,
+  startOfflineReplay,
+  replayOfflineOperations,
+  isOfflineQueueKey,
+  type Child,
+  type Identity,
+  type Role,
+} from "./api";
 import { registerServiceWorker, urlBase64ToUint8Array } from "./push";
 
 import "./style.css";
@@ -175,7 +189,7 @@ function PasswordReset({ confirm = false }: { confirm?: boolean }) {
                 ? { token, password: data.get("password") }
                 : { email: data.get("email") },
             });
-            if (confirm) tokens.remove("parent");
+            if (confirm) await tokens.remove("parent");
             setDone(true);
           }}
         >
@@ -466,6 +480,33 @@ function TaskBoard({ role, childId }: { role: Role; childId?: string }) {
   const [busy, setBusy] = useState(false);
   const [editing, setEditing] = useState<string | null>(null);
   const [version, setVersion] = useState(0);
+  const [pending, setPending] = useState<Awaited<ReturnType<typeof pendingOperations>>>([]);
+  useEffect(() => {
+    let active = true;
+    let revision = 0;
+    const updatePending = () => {
+      const current = ++revision;
+      void pendingOperations(role).then((operations) => {
+        if (active && current === revision) setPending(operations);
+      });
+    };
+    updatePending();
+    const refresh = () => setVersion((v) => v + 1);
+    const storage = (event: StorageEvent) => {
+      if (event.storageArea !== localStorage || !isOfflineQueueKey(event.key)) return;
+      updatePending();
+      refresh();
+    };
+    window.addEventListener(offlineEvent, updatePending);
+    window.addEventListener(syncEvent, refresh);
+    window.addEventListener("storage", storage);
+    return () => {
+      active = false;
+      window.removeEventListener(offlineEvent, updatePending);
+      window.removeEventListener(syncEvent, refresh);
+      window.removeEventListener("storage", storage);
+    };
+  }, [role]);
   const [tab, setTab] = useState<"list" | "create">("list");
   const boardRef = useRef<HTMLDivElement>(null);
   const navigate = useNavigate();
@@ -495,12 +536,15 @@ function TaskBoard({ role, childId }: { role: Role; childId?: string }) {
     setBusy(true);
     setError("");
     try {
-      await api(`/tasks/${task.id}${status ? "/status" : ""}`, {
-        role,
-        method: status ? "PATCH" : "DELETE",
-        ...(status ? { body: { status } } : {}),
-      });
-      setVersion((v) => v + 1);
+      const result = await api<{ queued?: boolean }>(
+        `/tasks/${task.id}${status ? "/status" : ""}`,
+        {
+          role,
+          method: status ? "PATCH" : "DELETE",
+          ...(status ? { body: { status } } : {}),
+        },
+      );
+      if (!result.queued) setVersion((v) => v + 1);
     } catch (e) {
       report(e);
       setVersion((v) => v + 1);
@@ -568,9 +612,17 @@ function TaskBoard({ role, childId }: { role: Role; childId?: string }) {
             <button
               className={secondaryButton}
               disabled={busy}
-              onClick={() => {
+              onClick={async () => {
+                setBusy(true);
                 setError("");
-                setVersion((v) => v + 1);
+                try {
+                  await replayOfflineOperations();
+                } catch (e) {
+                  report(e);
+                } finally {
+                  setVersion((v) => v + 1);
+                  setBusy(false);
+                }
               }}
             >
               一覧を更新
@@ -659,7 +711,10 @@ function TaskBoard({ role, childId }: { role: Role; childId?: string }) {
                           {status === "IN_PROGRESS" && task.childId === childId && (
                             <button
                               className={primaryButton}
-                              disabled={busy}
+                              disabled={
+                                busy ||
+                                pending.some((entry) => entry.path === `/tasks/${task.id}/status`)
+                              }
                               onClick={() => mutate(task, "WAIT_REVIEW")}
                             >
                               できた!
@@ -1155,10 +1210,59 @@ function NotificationSettings() {
     </div>
   );
 }
+function OfflineStatus() {
+  const [offline, setOffline] = useState(!navigator.onLine);
+  const [cached, setCached] = useState(false);
+  const [count, setCount] = useState(0);
+  const [message, setMessage] = useState("");
+  useEffect(() => {
+    const connection = () => setOffline(!navigator.onLine);
+    const cacheUsed = () => setCached(true);
+    let active = true;
+    let revision = 0;
+    const update = (event?: Event) => {
+      const current = ++revision;
+      void pendingOperations().then((operations) => {
+        if (active && current === revision) setCount(operations.length);
+      });
+      if (event instanceof CustomEvent && typeof event.detail === "string")
+        setMessage(event.detail);
+    };
+    window.addEventListener("online", connection);
+    window.addEventListener("offline", connection);
+    window.addEventListener("ctrl-y-cached", cacheUsed);
+    window.addEventListener(offlineEvent, update);
+    window.addEventListener("storage", update);
+    update();
+    const stop = startOfflineReplay();
+    return () => {
+      active = false;
+      stop();
+      window.removeEventListener("online", connection);
+      window.removeEventListener("offline", connection);
+      window.removeEventListener("ctrl-y-cached", cacheUsed);
+      window.removeEventListener(offlineEvent, update);
+      window.removeEventListener("storage", update);
+    };
+  }, []);
+  return (
+    <aside className="text-center text-sm" aria-live="polite">
+      {(offline || cached) && (
+        <p>
+          オフライン表示中（最終更新:
+          直前の取得結果）。最新情報はオンラインで再読み込みしてください。
+        </p>
+      )}
+      {count > 0 && <p>未送信の操作: {count}件</p>}
+      {message && <p>{message}</p>}
+    </aside>
+  );
+}
 function App() {
   return (
     <main className="min-h-svh bg-[#FFF877] bg-[url('/images/back2.png')] bg-cover bg-fixed bg-center bg-no-repeat px-4 pt-[max(1rem,env(safe-area-inset-top))] pb-[max(1rem,env(safe-area-inset-bottom))] font-sans text-[#5C410E] md:bg-[url('/images/back.png')] sm:px-8">
       <p className="text-center text-sm font-bold tracking-wide">Ctrl-Y v2 · ご褒美ポケット</p>
+      <OfflineStatus />
       <Routes>
         <Route path="/" element={<ParentLogin />} />
         <Route path="/forgot-password" element={<PasswordReset key="request" />} />

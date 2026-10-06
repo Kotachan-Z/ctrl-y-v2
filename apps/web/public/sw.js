@@ -39,9 +39,78 @@ self.addEventListener("activate", (event) => {
     })(),
   );
 });
+const API_CACHE = "ctrl-y-api-v1";
+const offlinePaths =
+  /^\/api\/(?:tasks(?:\/[^/]+)?|payroll|children(?:\/[^/]+\/payroll)?|settings\/payroll|session)$/;
+
+const apiRequests = new Map();
+
+async function apiNetworkFirst(request) {
+  let cache;
+  let key;
+  try {
+    const digest = await crypto.subtle.digest(
+      "SHA-256",
+      new TextEncoder().encode(request.headers.get("Authorization")),
+    );
+    const hash = Array.from(new Uint8Array(digest), (byte) =>
+      byte.toString(16).padStart(2, "0"),
+    ).join("");
+    // A separate namespace preserves the complete original URL, including query parameters.
+    key = new URL(`/__offline_api/${hash}/${encodeURIComponent(request.url)}`, self.location.origin)
+      .href;
+    cache = await caches.open(API_CACHE);
+  } catch {
+    // Unavailable storage must not prevent online requests.
+  }
+  if (!cache || !key) return apiFetch(request);
+  // Serialize the entire fetch/write cycle per key, in queue order. Different keys
+  // remain independent, and a failed request must not block the next request.
+  const previous = apiRequests.get(key) ?? Promise.resolve();
+  const current = previous.catch(() => {}).then(() => apiFetch(request, cache, key));
+  apiRequests.set(key, current);
+  try {
+    return await current;
+  } finally {
+    if (apiRequests.get(key) === current) apiRequests.delete(key);
+  }
+}
+
+async function apiFetch(request, cache, key) {
+  let response;
+  try {
+    response = await fetch(request);
+  } catch {
+    const cached = cache && key ? await cache.match(key) : undefined;
+    if (!cached) return Response.error();
+    const headers = new Headers(cached.headers);
+    headers.set("X-Ctrl-Y-Offline", "1");
+    return new Response(cached.body, { status: cached.status, headers });
+  }
+  if (cache && key) {
+    try {
+      if (response.ok) await cache.put(key, response.clone());
+      // Never use a previous success after the server rejects this credential/resource.
+      else if (response.status >= 400 && response.status < 500) await cache.delete(key);
+    } catch {
+      // Cache writes are best-effort.
+    }
+  }
+  return response;
+}
+
 self.addEventListener("fetch", (event) => {
   const { request } = event;
   const url = new URL(request.url);
+  if (
+    request.method === "GET" &&
+    url.origin === self.location.origin &&
+    offlinePaths.test(url.pathname) &&
+    request.headers.get("Authorization")?.startsWith("Bearer ")
+  ) {
+    event.respondWith(apiNetworkFirst(request));
+    return;
+  }
   if (
     request.method !== "GET" ||
     url.origin !== self.location.origin ||
