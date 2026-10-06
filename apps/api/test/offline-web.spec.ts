@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { runInNewContext } from "node:vm";
 
@@ -47,12 +48,12 @@ describe("offline status queue", () => {
   it("persists network failures, retains them on network retry failure and removes successes", async () => {
     fetchMock.mockRejectedValue(new TypeError("Failed to fetch"));
     expect(await change()).toEqual({ queued: true });
-    expect(pendingOperations()).toHaveLength(1);
+    expect(await pendingOperations()).toHaveLength(1);
     await replayOfflineOperations();
-    expect(pendingOperations()).toHaveLength(1);
+    expect(await pendingOperations()).toHaveLength(1);
     fetchMock.mockResolvedValue(Response.json({ ok: true }));
     await replayOfflineOperations();
-    expect(pendingOperations()).toHaveLength(0);
+    expect(await pendingOperations()).toHaveLength(0);
     expect(fetchMock).toHaveBeenLastCalledWith(
       "/api/tasks/task-id/status",
       expect.objectContaining({
@@ -71,32 +72,34 @@ describe("offline status queue", () => {
       window.addEventListener("ctrl-y-offline", listener);
       fetchMock.mockResolvedValue(new Response("not JSON", { status }));
       await replayOfflineOperations();
-      expect(pendingOperations()).toHaveLength(0);
+      expect(await pendingOperations()).toHaveLength(0);
       expect(listener).toHaveBeenCalledWith(
         expect.objectContaining({ detail: expect.stringContaining(`HTTP ${status}`) }),
       );
     },
   );
-  it("stores only identity and replays with a rotated current token", async () => {
+  it("stores only an identity digest and replays with a rotated current token", async () => {
     fetchMock.mockRejectedValue(new TypeError("offline"));
     await change();
-    const entry = pendingOperations()[0];
+    const entry = (await pendingOperations())[0];
     const stored = localStorage.getItem(`ctrl-y.offline-status.${entry.id}`)!;
     expect(JSON.parse(stored)).toMatchObject({
-      owner: { role: "child", id: "child", parentId: "family" },
+      ownerFingerprint: createHash("sha256").update("child:child:family").digest("hex"),
     });
     expect(stored).not.toContain(childToken);
     expect(JSON.parse(stored)).not.toHaveProperty("token");
+    expect(JSON.parse(stored)).not.toHaveProperty("owner");
+    expect(stored).not.toContain("family");
     const rotated = jwt("child", "child", "new");
     tokens.set("child", rotated, "new-refresh");
-    expect(pendingOperations("child")).toHaveLength(1);
-    expect(pendingOperations("parent")).toHaveLength(0);
+    expect(await pendingOperations("child")).toHaveLength(1);
+    expect(await pendingOperations("parent")).toHaveLength(0);
     fetchMock.mockResolvedValue(Response.json({ ok: true }));
     await replayOfflineOperations();
     expect(fetchMock.mock.lastCall?.[1]?.headers).toMatchObject({
       Authorization: `Bearer ${rotated}`,
     });
-    expect(pendingOperations()).toHaveLength(0);
+    expect(await pendingOperations()).toHaveLength(0);
   });
   it.each([200, 401, 500])("replay refreshes once and handles retry HTTP %s", async (status) => {
     fetchMock.mockRejectedValue(new TypeError("offline"));
@@ -112,7 +115,7 @@ describe("offline status queue", () => {
     expect(fetchMock.mock.lastCall?.[1]?.headers).toMatchObject({
       Authorization: `Bearer ${rotated}`,
     });
-    expect(pendingOperations()).toHaveLength(status === 200 ? 0 : 1);
+    expect(await pendingOperations()).toHaveLength(status === 200 ? 0 : 1);
   });
   it.each([401, 503])("retains queued work when refresh fails with %s", async (status) => {
     fetchMock.mockRejectedValue(new TypeError("offline"));
@@ -123,7 +126,7 @@ describe("offline status queue", () => {
       .mockResolvedValueOnce(Response.json({}, { status }));
     await replayOfflineOperations();
     expect(fetchMock).toHaveBeenCalledTimes(2);
-    expect(pendingOperations()).toHaveLength(1);
+    expect(await pendingOperations()).toHaveLength(1);
   });
   it("queues a network failure after a successful refresh", async () => {
     fetchMock
@@ -133,13 +136,13 @@ describe("offline status queue", () => {
       )
       .mockRejectedValueOnce(new TypeError("offline"));
     expect(await change()).toEqual({ queued: true });
-    expect(pendingOperations()).toHaveLength(1);
+    expect(await pendingOperations()).toHaveLength(1);
   });
   it("rejects unidentifiable tokens", async () => {
     tokens.set("child", "malformed", "refresh");
     fetchMock.mockRejectedValue(new TypeError("offline"));
     await expect(change()).rejects.toThrow("offline");
-    expect(pendingOperations()).toHaveLength(0);
+    expect(await pendingOperations()).toHaveLength(0);
   });
   it("does not retry under a different family after refresh", async () => {
     fetchMock.mockRejectedValue(new TypeError("offline"));
@@ -153,9 +156,9 @@ describe("offline status queue", () => {
       });
     await replayOfflineOperations();
     expect(fetchMock).toHaveBeenCalledTimes(2);
-    expect(pendingOperations()).toHaveLength(0);
+    expect(await pendingOperations()).toHaveLength(0);
     tokens.set("child", childToken, "refresh-child");
-    expect(pendingOperations()).toHaveLength(1);
+    expect(await pendingOperations()).toHaveLength(1);
   });
   it("logout after rotation removes only that owner's queued work and both credentials", async () => {
     fetchMock.mockRejectedValue(new TypeError("offline"));
@@ -163,17 +166,19 @@ describe("offline status queue", () => {
     tokens.set("child", jwt("child", "another"), "another-refresh");
     await change();
     tokens.set("child", jwt("child", "child", "new"), "new-refresh");
-    tokens.remove("child");
+    await tokens.remove("child");
     expect(tokens.get("child")).toBeNull();
     expect(tokens.getRefresh("child")).toBeNull();
     tokens.set("child", childToken, "refresh-child");
-    expect(pendingOperations()).toHaveLength(0);
+    expect(await pendingOperations()).toHaveLength(0);
     tokens.set("child", jwt("child", "another"), "another-refresh");
-    expect(pendingOperations()).toHaveLength(1);
+    expect(await pendingOperations()).toHaveLength(1);
   });
-  it("rejects invalid stored owners and legacy bearer entries", () => {
-    for (const [index, owner] of [
+  it("rejects invalid fingerprints and legacy identity/bearer entries", async () => {
+    for (const [index, ownerFingerprint] of [
       null,
+      "",
+      123,
       {},
       { role: "child", id: "" },
       { role: "child", id: "child", parentId: 1 },
@@ -183,7 +188,8 @@ describe("offline status queue", () => {
         `ctrl-y.offline-status.invalid-${index}`,
         JSON.stringify({
           id: `invalid-${index}`,
-          owner,
+          ownerFingerprint,
+          owner: { role: "child", id: "child", parentId: "family" },
           role: "child",
           path: "/tasks/task-id/status",
           body: JSON.stringify({ status: "WAIT_REVIEW" }),
@@ -202,7 +208,7 @@ describe("offline status queue", () => {
         created: 1,
       }),
     );
-    expect(pendingOperations()).toHaveLength(0);
+    expect(await pendingOperations()).toHaveLength(0);
   });
   it("dispatches cache notifications for successful cached responses", async () => {
     const listener = vi.fn();
@@ -218,7 +224,7 @@ describe("offline status queue", () => {
     await expect(change()).rejects.toThrow("conflict");
     fetchMock.mockRejectedValue(new TypeError("Failed to fetch"));
     await expect(api("/tasks", { role: "child", method: "POST", body: {} })).rejects.toThrow();
-    expect(pendingOperations()).toHaveLength(0);
+    expect(await pendingOperations()).toHaveLength(0);
   });
   it.each<[Role, string]>([
     ["child", "IN_PROGRESS"],
@@ -235,7 +241,7 @@ describe("offline status queue", () => {
         body: { status },
       }),
     ).rejects.toThrow("offline");
-    expect(pendingOperations()).toHaveLength(0);
+    expect(await pendingOperations()).toHaveLength(0);
   });
   it.each(["logout", "switch"])("does not save a pending request after %s", async (action) => {
     let rejectFetch!: (reason: Error) => void;
@@ -247,12 +253,12 @@ describe("offline status queue", () => {
     );
     const request = change();
     const assertion = expect(request).rejects.toThrow("offline");
-    if (action === "logout") tokens.remove("child");
+    if (action === "logout") await tokens.remove("child");
     else tokens.set("child", jwt("child", "other"), "refresh-other");
     rejectFetch(new TypeError("offline"));
     await assertion;
     tokens.set("child", childToken, "refresh-child");
-    expect(pendingOperations()).toHaveLength(0);
+    expect(await pendingOperations()).toHaveLength(0);
   });
   it("discards legacy approvals, reopenings and starts without sending them", async () => {
     tokens.set("parent", jwt("parent"), "refresh-parent");
@@ -266,7 +272,9 @@ describe("offline status queue", () => {
         JSON.stringify({
           id,
           role,
-          owner: { role, id: role, ...(role === "child" ? { parentId: "family" } : {}) },
+          ownerFingerprint: createHash("sha256")
+            .update(`${role}:${role}:${role === "child" ? "family" : ""}`)
+            .digest("hex"),
           path: "/tasks/task-id/status",
           body: JSON.stringify({ status }),
           created: 1,
@@ -275,7 +283,7 @@ describe("offline status queue", () => {
     }
     await replayOfflineOperations();
     expect(fetchMock).not.toHaveBeenCalled();
-    expect(pendingOperations()).toHaveLength(0);
+    expect(await pendingOperations()).toHaveLength(0);
   });
   it("retries when visible and removes the visibility listener on cleanup", async () => {
     const stop = startOfflineReplay();
@@ -291,7 +299,7 @@ describe("offline status queue", () => {
     document.dispatchEvent(new Event("visibilitychange"));
     await replayOfflineOperations();
     expect(fetchMock).toHaveBeenCalledTimes(calls + 1);
-    expect(pendingOperations()).toHaveLength(0);
+    expect(await pendingOperations()).toHaveLength(0);
     fetchMock.mockRejectedValue(new TypeError("offline"));
     await change();
     fetchMock.mockResolvedValue(Response.json({ ok: true }));
@@ -300,7 +308,7 @@ describe("offline status queue", () => {
     document.dispatchEvent(new Event("visibilitychange"));
     window.dispatchEvent(new Event("online"));
     expect(fetchMock).toHaveBeenCalledTimes(beforeCleanup);
-    expect(pendingOperations()).toHaveLength(1);
+    expect(await pendingOperations()).toHaveLength(1);
   });
   it("automatically replays at startup and online events, serializing concurrent triggers", async () => {
     fetchMock.mockRejectedValue(new TypeError("Failed to fetch"));
@@ -308,7 +316,7 @@ describe("offline status queue", () => {
     fetchMock.mockResolvedValue(Response.json({ ok: true }));
     const stop = startOfflineReplay();
     await replayOfflineOperations();
-    expect(pendingOperations()).toHaveLength(0);
+    expect(await pendingOperations()).toHaveLength(0);
     fetchMock.mockRejectedValue(new TypeError("Failed to fetch"));
     await change();
     fetchMock.mockResolvedValue(Response.json({ ok: true }));
@@ -317,7 +325,7 @@ describe("offline status queue", () => {
     window.dispatchEvent(new Event("online"));
     await replayOfflineOperations();
     expect(fetchMock).toHaveBeenCalledTimes(calls + 1);
-    expect(pendingOperations()).toHaveLength(0);
+    expect(await pendingOperations()).toHaveLength(0);
     stop();
   });
   it("reports storage failure instead of claiming an operation was queued", async () => {
@@ -326,7 +334,7 @@ describe("offline status queue", () => {
       throw new Error("Storage full");
     });
     await expect(change()).rejects.toThrow("Storage full");
-    expect(pendingOperations()).toHaveLength(0);
+    expect(await pendingOperations()).toHaveLength(0);
   });
   it("never replays another token's operations and removes pending work on logout", async () => {
     fetchMock.mockRejectedValue(new TypeError("Failed to fetch"));
@@ -336,10 +344,10 @@ describe("offline status queue", () => {
     await replayOfflineOperations();
     expect(fetchMock).not.toHaveBeenCalled();
     tokens.set("child", childToken, "refresh-child");
-    expect(pendingOperations()).toHaveLength(1);
-    tokens.remove("child");
+    expect(await pendingOperations()).toHaveLength(1);
+    await tokens.remove("child");
     tokens.set("child", childToken, "refresh-child");
-    expect(pendingOperations()).toHaveLength(0);
+    expect(await pendingOperations()).toHaveLength(0);
   });
 });
 

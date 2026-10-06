@@ -13,14 +13,18 @@ export const tokens = {
     localStorage.setItem(keys[role], token);
     localStorage.setItem(refreshKeys[role], refreshToken);
   },
-  remove: (role: Role) => {
-    const owner = tokenOwner(tokens.get(role));
+  remove: async (role: Role): Promise<void> => {
+    const token = tokens.get(role);
+    const refreshToken = tokens.getRefresh(role);
+    const ownerFingerprint = await identityFingerprint(tokenOwner(token));
+    if (tokens.get(role) === token && tokens.getRefresh(role) === refreshToken) {
+      localStorage.removeItem(keys[role]);
+      localStorage.removeItem(refreshKeys[role]);
+    }
     for (const entry of readQueue()) {
-      if (identitiesMatch(role, owner, entry.owner))
+      if (entry.ownerFingerprint === ownerFingerprint)
         localStorage.removeItem(queuePrefix + entry.id);
     }
-    localStorage.removeItem(keys[role]);
-    localStorage.removeItem(refreshKeys[role]);
     notifyOffline();
   },
 };
@@ -61,6 +65,14 @@ function identitiesMatch(role: Role, a: Identity | undefined, b: Identity | unde
   return (
     !!a && !!b && a.role === role && b.role === role && a.id === b.id && a.parentId === b.parentId
   );
+}
+async function identityFingerprint(identity: Identity | undefined): Promise<string | undefined> {
+  if (!identity) return undefined;
+  const canonical = `${identity.role}:${identity.id}:${identity.parentId ?? ""}`;
+  const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(canonical));
+  return Array.from(new Uint8Array(digest))
+    .map((b) => b.toString(16).padStart(2, "0"))
+    .join("");
 }
 const refreshing: Partial<Record<Role, Promise<{ refreshed: boolean; invalid?: boolean }>>> = {};
 // Web Locks also serialize refresh/logout across tabs sharing localStorage.
@@ -113,7 +125,7 @@ export async function logout(role: Role) {
   await sessionLock(role, async () => {
     const refreshToken = tokens.getRefresh(role);
     if (refreshToken) await api("/auth/logout", { body: { refreshToken } });
-    if (tokens.getRefresh(role) === refreshToken) tokens.remove(role);
+    if (tokens.getRefresh(role) === refreshToken) await tokens.remove(role);
   });
 }
 export class ApiError extends Error {
@@ -151,11 +163,19 @@ export async function api<T>(
     const owner = tokenOwner(token);
     if (!owner || !identitiesMatch(options.role, owner, tokenOwner(tokens.get(options.role))))
       throw error;
+    const ownerFingerprint = await identityFingerprint(owner);
+    const currentToken = tokens.get(options.role);
+    if (
+      !ownerFingerprint ||
+      ownerFingerprint !== (await identityFingerprint(tokenOwner(currentToken))) ||
+      tokens.get(options.role) !== currentToken
+    )
+      throw error;
     const entry: QueuedOperation = {
       id: crypto.randomUUID(),
       path,
       body,
-      owner,
+      ownerFingerprint,
       role: options.role,
       created: Date.now(),
     };
@@ -180,7 +200,7 @@ type QueuedOperation = {
   id: string;
   path: string;
   body: string;
-  owner: Identity;
+  ownerFingerprint: string;
   role: Role;
   created: number;
 };
@@ -214,12 +234,8 @@ function readQueue(): QueuedOperation[] {
       if (
         entry &&
         typeof entry.id === "string" &&
-        entry.owner &&
-        (entry.owner.role === "parent" || entry.owner.role === "child") &&
-        entry.owner.role === entry.role &&
-        typeof entry.owner.id === "string" &&
-        entry.owner.id.length > 0 &&
-        (entry.owner.parentId === undefined || typeof entry.owner.parentId === "string") &&
+        typeof entry.ownerFingerprint === "string" &&
+        entry.ownerFingerprint.length > 0 &&
         (entry.role === "parent" || entry.role === "child") &&
         typeof entry.body === "string" &&
         typeof entry.path === "string" &&
@@ -234,12 +250,16 @@ function readQueue(): QueuedOperation[] {
   // oxlint-disable-next-line unicorn/no-array-sort
   return entries.sort((a, b) => a.created - b.created);
 }
-export function pendingOperations(role?: Role) {
-  return readQueue().filter(
-    (entry) =>
-      (!role || entry.role === role) &&
-      identitiesMatch(entry.role, entry.owner, tokenOwner(tokens.get(entry.role))),
-  );
+export async function pendingOperations(role?: Role): Promise<QueuedOperation[]> {
+  const pending: QueuedOperation[] = [];
+  for (const entry of readQueue()) {
+    if (role && entry.role !== role) continue;
+    const token = tokens.get(entry.role);
+    const fingerprint = await identityFingerprint(tokenOwner(token));
+    if (entry.ownerFingerprint === fingerprint && tokens.get(entry.role) === token)
+      pending.push(entry);
+  }
+  return pending;
 }
 function notifyOffline(message = "") {
   window.dispatchEvent(new CustomEvent(offlineEvent, { detail: message }));
@@ -281,14 +301,14 @@ async function sendWithRefresh(
   }
   // Transient refresh failures retain credentials. Never clear a newer login's session.
   // Replay retains the entry on authorization failure so it can be retried later.
-  if (invalid && !retainQueue && tokens.get(role) === rejectedToken) tokens.remove(role);
+  if (invalid && !retainQueue && tokens.get(role) === rejectedToken) await tokens.remove(role);
   return response;
 }
 let replay: Promise<void> | undefined;
 export function replayOfflineOperations(): Promise<void> {
   if (replay) return replay;
   async function drain() {
-    for (const entry of pendingOperations()) {
+    for (const entry of await pendingOperations()) {
       // Discard operations saved by older versions that queued other transitions.
       if (!isCompletionReport(entry.role, entry.body)) {
         localStorage.removeItem(queuePrefix + entry.id);
@@ -298,16 +318,19 @@ export function replayOfflineOperations(): Promise<void> {
       // Recheck after each await: logout/account switching can happen during replay.
       const token = tokens.get(entry.role);
       if (
-        !identitiesMatch(entry.role, entry.owner, tokenOwner(token)) ||
+        entry.ownerFingerprint !== (await identityFingerprint(tokenOwner(token))) ||
+        tokens.get(entry.role) !== token ||
         !localStorage.getItem(queuePrefix + entry.id)
       )
         continue;
       let response;
       try {
         response = await sendWithRefresh(entry.path, "PATCH", token, entry.body, entry.role, true);
+        const currentToken = tokens.get(entry.role);
         if (
           response.status === 401 ||
-          !identitiesMatch(entry.role, entry.owner, tokenOwner(tokens.get(entry.role)))
+          entry.ownerFingerprint !== (await identityFingerprint(tokenOwner(currentToken))) ||
+          tokens.get(entry.role) !== currentToken
         )
           break;
       } catch (error) {

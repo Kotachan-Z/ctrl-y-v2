@@ -189,7 +189,7 @@ function PasswordReset({ confirm = false }: { confirm?: boolean }) {
                 ? { token, password: data.get("password") }
                 : { email: data.get("email") },
             });
-            if (confirm) tokens.remove("parent");
+            if (confirm) await tokens.remove("parent");
             setDone(true);
           }}
         >
@@ -480,9 +480,17 @@ function TaskBoard({ role, childId }: { role: Role; childId?: string }) {
   const [busy, setBusy] = useState(false);
   const [editing, setEditing] = useState<string | null>(null);
   const [version, setVersion] = useState(0);
-  const [pending, setPending] = useState(() => pendingOperations(role));
+  const [pending, setPending] = useState<Awaited<ReturnType<typeof pendingOperations>>>([]);
   useEffect(() => {
-    const updatePending = () => setPending(pendingOperations(role));
+    let active = true;
+    let revision = 0;
+    const updatePending = () => {
+      const current = ++revision;
+      void pendingOperations(role).then((operations) => {
+        if (active && current === revision) setPending(operations);
+      });
+    };
+    updatePending();
     const refresh = () => setVersion((v) => v + 1);
     const storage = (event: StorageEvent) => {
       if (event.storageArea !== localStorage || !isOfflineQueueKey(event.key)) return;
@@ -493,6 +501,7 @@ function TaskBoard({ role, childId }: { role: Role; childId?: string }) {
     window.addEventListener(syncEvent, refresh);
     window.addEventListener("storage", storage);
     return () => {
+      active = false;
       window.removeEventListener(offlineEvent, updatePending);
       window.removeEventListener(syncEvent, refresh);
       window.removeEventListener("storage", storage);
@@ -1204,13 +1213,18 @@ function NotificationSettings() {
 function OfflineStatus() {
   const [offline, setOffline] = useState(!navigator.onLine);
   const [cached, setCached] = useState(false);
-  const [count, setCount] = useState(() => pendingOperations().length);
+  const [count, setCount] = useState(0);
   const [message, setMessage] = useState("");
   useEffect(() => {
     const connection = () => setOffline(!navigator.onLine);
     const cacheUsed = () => setCached(true);
-    const update = (event: Event) => {
-      setCount(pendingOperations().length);
+    let active = true;
+    let revision = 0;
+    const update = (event?: Event) => {
+      const current = ++revision;
+      void pendingOperations().then((operations) => {
+        if (active && current === revision) setCount(operations.length);
+      });
       if (event instanceof CustomEvent && typeof event.detail === "string")
         setMessage(event.detail);
     };
@@ -1219,8 +1233,10 @@ function OfflineStatus() {
     window.addEventListener("ctrl-y-cached", cacheUsed);
     window.addEventListener(offlineEvent, update);
     window.addEventListener("storage", update);
+    update();
     const stop = startOfflineReplay();
     return () => {
+      active = false;
       stop();
       window.removeEventListener("online", connection);
       window.removeEventListener("offline", connection);
