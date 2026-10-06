@@ -7,6 +7,9 @@ import { createRepository, type AuthRepository } from "./repository.js";
 import { createApp } from "./server.js";
 
 export interface Env {
+  RESEND_API_KEY?: string;
+  RESEND_FROM_EMAIL?: string;
+  WEB_ORIGIN?: string;
   ASSETS: Fetcher;
   HYPERDRIVE: Hyperdrive;
   JWT_SECRET: string;
@@ -17,6 +20,8 @@ export interface Env {
 
 // Keep counters for the lifetime of this isolate, across per-request apps.
 const failureLimiter = createFailureLimiter();
+const resetLimit = createFailureLimiter(true);
+
 const requests = new AsyncLocalStorage<{
   repository: AuthRepository;
   pending: Promise<void>[];
@@ -33,6 +38,12 @@ export default {
     if (pathname !== "/api" && !pathname.startsWith("/api/")) return env.ASSETS.fetch(request);
 
     const app = createApp({
+      resetLimit,
+      resetMail: {
+        apiKey: env.RESEND_API_KEY,
+        from: env.RESEND_FROM_EMAIL,
+        webOrigin: env.WEB_ORIGIN ?? "",
+      },
       jwtSecret: env.JWT_SECRET ?? "",
       failureLimiter,
       vapid: {

@@ -1,5 +1,5 @@
 import { children, parents, payroll, refreshTokens, tasks } from "@ctrl-y/database";
-import { and, count, eq, gte, isNull, lt, sql } from "drizzle-orm";
+import { and, count, eq, gt, gte, isNull, lt, sql } from "drizzle-orm";
 import type { PgDatabase, PgQueryResultHKT } from "drizzle-orm/pg-core";
 
 import type { Identity } from "./auth.js";
@@ -253,6 +253,26 @@ export function createRepository<T extends PgQueryResultHKT, S extends Record<st
         }
         return task;
       });
+    },
+    async savePasswordReset(parentId: string, tokenHash: string, expiresAt: Date) {
+      await db
+        .update(parents)
+        .set({ passwordResetHash: tokenHash, passwordResetExpiresAt: expiresAt })
+        .where(eq(parents.id, parentId));
+    },
+    async resetPassword(parentId: string, tokenHash: string, passwordHash: string) {
+      const rows = await db
+        .update(parents)
+        .set({ passwordHash, passwordResetHash: null, passwordResetExpiresAt: null })
+        .where(
+          and(
+            eq(parents.id, parentId),
+            eq(parents.passwordResetHash, tokenHash),
+            gt(parents.passwordResetExpiresAt, new Date()),
+          ),
+        )
+        .returning({ id: parents.id });
+      return rows.length === 1;
     },
     async register(email: string, passwordHash: string) {
       const result = await db

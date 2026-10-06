@@ -20,6 +20,8 @@ export const parents = pgTable("parents", {
   id: uuid().primaryKey().defaultRandom(),
   email: text().notNull().unique(),
   passwordHash: text().notNull(),
+  passwordResetHash: text(),
+  passwordResetExpiresAt: timestamp({ withTimezone: true }),
   // Empty until setup; thereafter bcrypt hash of the shared passphrase.
   keyword: text().notNull().default(""),
   cutoffDay: boolean().notNull().default(false),
