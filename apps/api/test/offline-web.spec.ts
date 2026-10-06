@@ -1,4 +1,3 @@
-import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { runInNewContext } from "node:vm";
 
@@ -45,6 +44,18 @@ describe("offline status queue", () => {
       method: "PATCH",
       body: { status: "WAIT_REVIEW" },
     });
+  it("mints a fresh random session id for every login, including the same account", () => {
+    const sessionId = tokens.getSessionId("child");
+    expect(sessionId).toMatch(/^[0-9a-f-]{36}$/);
+    tokens.set("child", childToken, "refresh-child");
+    expect(tokens.getSessionId("child")).not.toBe(sessionId);
+  });
+  it("does not queue without a session id", async () => {
+    localStorage.removeItem("ctrl-y.child-session-id");
+    fetchMock.mockRejectedValue(new TypeError("offline"));
+    await expect(change()).rejects.toThrow("offline");
+    expect(await pendingOperations()).toHaveLength(0);
+  });
   it("persists network failures, retains them on network retry failure and removes successes", async () => {
     fetchMock.mockRejectedValue(new TypeError("Failed to fetch"));
     expect(await change()).toEqual({ queued: true });
@@ -78,20 +89,20 @@ describe("offline status queue", () => {
       );
     },
   );
-  it("stores only an identity digest and replays with a rotated current token", async () => {
+  it("stores an independent session id and replays with a rotated current token", async () => {
     fetchMock.mockRejectedValue(new TypeError("offline"));
     await change();
     const entry = (await pendingOperations())[0];
     const stored = localStorage.getItem(`ctrl-y.offline-status.${entry.id}`)!;
     expect(JSON.parse(stored)).toMatchObject({
-      ownerFingerprint: createHash("sha256").update("child:child:family").digest("hex"),
+      sessionId: tokens.getSessionId("child"),
     });
     expect(stored).not.toContain(childToken);
     expect(JSON.parse(stored)).not.toHaveProperty("token");
     expect(JSON.parse(stored)).not.toHaveProperty("owner");
     expect(stored).not.toContain("family");
     const rotated = jwt("child", "child", "new");
-    tokens.set("child", rotated, "new-refresh");
+    tokens.set("child", rotated, "new-refresh", false);
     expect(await pendingOperations("child")).toHaveLength(1);
     expect(await pendingOperations("parent")).toHaveLength(0);
     fetchMock.mockResolvedValue(Response.json({ ok: true }));
@@ -110,7 +121,10 @@ describe("offline status queue", () => {
       .mockResolvedValueOnce(Response.json({}, { status: 401 }))
       .mockResolvedValueOnce(Response.json({ token: rotated, refreshToken: "new-refresh" }))
       .mockResolvedValueOnce(Response.json({}, { status }));
+    const sessionId = tokens.getSessionId("child");
+    expect((await pendingOperations())[0].sessionId).toBe(sessionId);
     await replayOfflineOperations();
+    expect(tokens.getSessionId("child")).toBe(sessionId);
     expect(fetchMock).toHaveBeenCalledTimes(3);
     expect(fetchMock.mock.lastCall?.[1]?.headers).toMatchObject({
       Authorization: `Bearer ${rotated}`,
@@ -158,24 +172,25 @@ describe("offline status queue", () => {
     expect(fetchMock).toHaveBeenCalledTimes(2);
     expect(await pendingOperations()).toHaveLength(0);
     tokens.set("child", childToken, "refresh-child");
-    expect(await pendingOperations()).toHaveLength(1);
+    expect(await pendingOperations()).toHaveLength(0);
   });
-  it("logout after rotation removes only that owner's queued work and both credentials", async () => {
+  it("logout after refresh removes only that session's queued work and all session keys", async () => {
     fetchMock.mockRejectedValue(new TypeError("offline"));
     await change();
+    const previousEntry = (await pendingOperations())[0];
     tokens.set("child", jwt("child", "another"), "another-refresh");
     await change();
-    tokens.set("child", jwt("child", "child", "new"), "new-refresh");
+    const currentEntry = (await pendingOperations())[0];
+    tokens.set("child", jwt("child", "another", "new"), "new-refresh", false);
     await tokens.remove("child");
     expect(tokens.get("child")).toBeNull();
     expect(tokens.getRefresh("child")).toBeNull();
-    tokens.set("child", childToken, "refresh-child");
-    expect(await pendingOperations()).toHaveLength(0);
-    tokens.set("child", jwt("child", "another"), "another-refresh");
-    expect(await pendingOperations()).toHaveLength(1);
+    expect(tokens.getSessionId("child")).toBeNull();
+    expect(localStorage.getItem(`ctrl-y.offline-status.${currentEntry.id}`)).toBeNull();
+    expect(localStorage.getItem(`ctrl-y.offline-status.${previousEntry.id}`)).not.toBeNull();
   });
-  it("rejects invalid fingerprints and legacy identity/bearer entries", async () => {
-    for (const [index, ownerFingerprint] of [
+  it("rejects invalid session ids and legacy identity/bearer entries", async () => {
+    for (const [index, sessionId] of [
       null,
       "",
       123,
@@ -188,7 +203,7 @@ describe("offline status queue", () => {
         `ctrl-y.offline-status.invalid-${index}`,
         JSON.stringify({
           id: `invalid-${index}`,
-          ownerFingerprint,
+          sessionId,
           owner: { role: "child", id: "child", parentId: "family" },
           role: "child",
           path: "/tasks/task-id/status",
@@ -272,9 +287,7 @@ describe("offline status queue", () => {
         JSON.stringify({
           id,
           role,
-          ownerFingerprint: createHash("sha256")
-            .update(`${role}:${role}:${role === "child" ? "family" : ""}`)
-            .digest("hex"),
+          sessionId: tokens.getSessionId(role === "parent" ? "parent" : "child"),
           path: "/tasks/task-id/status",
           body: JSON.stringify({ status }),
           created: 1,
@@ -344,7 +357,7 @@ describe("offline status queue", () => {
     await replayOfflineOperations();
     expect(fetchMock).not.toHaveBeenCalled();
     tokens.set("child", childToken, "refresh-child");
-    expect(await pendingOperations()).toHaveLength(1);
+    expect(await pendingOperations()).toHaveLength(0);
     await tokens.remove("child");
     tokens.set("child", childToken, "refresh-child");
     expect(await pendingOperations()).toHaveLength(0);

@@ -25,6 +25,7 @@ beforeEach(() => {
 afterEach(() => vi.unstubAllGlobals());
 
 test("401 refreshes the requested role and retries the original method/body once", async () => {
+  const sessionId = tokens.getSessionId("parent");
   fetchMock
     .mockResolvedValueOnce(json({ error: "expired" }, 401))
     .mockResolvedValueOnce(json({ token: newParent, refreshToken: "next-parent" }))
@@ -49,6 +50,7 @@ test("401 refreshes the requested role and retries the original method/body once
       headers: { "Content-Type": "application/json", Authorization: `Bearer ${newParent}` },
     }),
   );
+  expect(tokens.getSessionId("parent")).toBe(sessionId);
   expect(tokens.getRefresh("parent")).toBe("next-parent");
   expect(tokens.get("child")).toBe(oldChild);
   expect(tokens.getRefresh("child")).toBe("refresh-child");
@@ -152,7 +154,7 @@ test.each([
 test("an already refreshed token with the same owner retries without another refresh", async () => {
   fetchMock
     .mockImplementationOnce(async () => {
-      tokens.set("parent", newParent, "next-parent");
+      tokens.set("parent", newParent, "next-parent", false);
       return json({ error: "expired" }, 401);
     })
     .mockResolvedValueOnce(json({ success: true }));

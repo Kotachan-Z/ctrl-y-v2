@@ -6,24 +6,34 @@ const refreshKeys: Record<Role, string> = {
   parent: "ctrl-y.parent-refresh-token",
   child: "ctrl-y.child-refresh-token",
 };
+const sessionKeys: Record<Role, string> = {
+  parent: "ctrl-y.parent-session-id",
+  child: "ctrl-y.child-session-id",
+};
 export const tokens = {
   get: (role: Role) => localStorage.getItem(keys[role]),
   getRefresh: (role: Role) => localStorage.getItem(refreshKeys[role]),
-  set: (role: Role, token: string, refreshToken: string) => {
+  getSessionId: (role: Role) => localStorage.getItem(sessionKeys[role]),
+  set: (role: Role, token: string, refreshToken: string, isNewSession = true) => {
     localStorage.setItem(keys[role], token);
     localStorage.setItem(refreshKeys[role], refreshToken);
+    if (isNewSession) localStorage.setItem(sessionKeys[role], crypto.randomUUID());
   },
   remove: async (role: Role): Promise<void> => {
     const token = tokens.get(role);
     const refreshToken = tokens.getRefresh(role);
-    const ownerFingerprint = await identityFingerprint(tokenOwner(token));
-    if (tokens.get(role) === token && tokens.getRefresh(role) === refreshToken) {
+    const sessionId = tokens.getSessionId(role);
+    if (
+      tokens.get(role) === token &&
+      tokens.getRefresh(role) === refreshToken &&
+      tokens.getSessionId(role) === sessionId
+    ) {
       localStorage.removeItem(keys[role]);
       localStorage.removeItem(refreshKeys[role]);
+      localStorage.removeItem(sessionKeys[role]);
     }
     for (const entry of readQueue()) {
-      if (entry.ownerFingerprint === ownerFingerprint)
-        localStorage.removeItem(queuePrefix + entry.id);
+      if (entry.sessionId === sessionId) localStorage.removeItem(queuePrefix + entry.id);
     }
     notifyOffline();
   },
@@ -66,14 +76,6 @@ function identitiesMatch(role: Role, a: Identity | undefined, b: Identity | unde
     !!a && !!b && a.role === role && b.role === role && a.id === b.id && a.parentId === b.parentId
   );
 }
-async function identityFingerprint(identity: Identity | undefined): Promise<string | undefined> {
-  if (!identity) return undefined;
-  const canonical = `${identity.role}:${identity.id}:${identity.parentId ?? ""}`;
-  const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(canonical));
-  return Array.from(new Uint8Array(digest))
-    .map((b) => b.toString(16).padStart(2, "0"))
-    .join("");
-}
 const refreshing: Partial<Record<Role, Promise<{ refreshed: boolean; invalid?: boolean }>>> = {};
 // Web Locks also serialize refresh/logout across tabs sharing localStorage.
 const sessionLock = async <T>(role: Role, action: () => Promise<T>): Promise<T> =>
@@ -107,7 +109,8 @@ async function refreshSession(
       if (typeof data.token !== "string" || typeof data.refreshToken !== "string")
         throw new Error("Refresh failed");
       // A login in another view must not be overwritten by an older request.
-      if (tokens.getRefresh(role) === refreshToken) tokens.set(role, data.token, data.refreshToken);
+      if (tokens.getRefresh(role) === refreshToken)
+        tokens.set(role, data.token, data.refreshToken, false);
       return { refreshed: sameOwner(role, failedToken, tokens.get(role)) };
     } catch {
       return { refreshed: false };
@@ -163,19 +166,13 @@ export async function api<T>(
     const owner = tokenOwner(token);
     if (!owner || !identitiesMatch(options.role, owner, tokenOwner(tokens.get(options.role))))
       throw error;
-    const ownerFingerprint = await identityFingerprint(owner);
-    const currentToken = tokens.get(options.role);
-    if (
-      !ownerFingerprint ||
-      ownerFingerprint !== (await identityFingerprint(tokenOwner(currentToken))) ||
-      tokens.get(options.role) !== currentToken
-    )
-      throw error;
+    const sessionId = tokens.getSessionId(options.role);
+    if (!sessionId || tokens.getSessionId(options.role) !== sessionId) throw error;
     const entry: QueuedOperation = {
       id: crypto.randomUUID(),
       path,
       body,
-      ownerFingerprint,
+      sessionId,
       role: options.role,
       created: Date.now(),
     };
@@ -200,7 +197,7 @@ type QueuedOperation = {
   id: string;
   path: string;
   body: string;
-  ownerFingerprint: string;
+  sessionId: string;
   role: Role;
   created: number;
 };
@@ -234,8 +231,8 @@ function readQueue(): QueuedOperation[] {
       if (
         entry &&
         typeof entry.id === "string" &&
-        typeof entry.ownerFingerprint === "string" &&
-        entry.ownerFingerprint.length > 0 &&
+        typeof entry.sessionId === "string" &&
+        entry.sessionId.length > 0 &&
         (entry.role === "parent" || entry.role === "child") &&
         typeof entry.body === "string" &&
         typeof entry.path === "string" &&
@@ -254,10 +251,7 @@ export async function pendingOperations(role?: Role): Promise<QueuedOperation[]>
   const pending: QueuedOperation[] = [];
   for (const entry of readQueue()) {
     if (role && entry.role !== role) continue;
-    const token = tokens.get(entry.role);
-    const fingerprint = await identityFingerprint(tokenOwner(token));
-    if (entry.ownerFingerprint === fingerprint && tokens.get(entry.role) === token)
-      pending.push(entry);
+    if (tokens.getSessionId(entry.role) === entry.sessionId) pending.push(entry);
   }
   return pending;
 }
@@ -318,21 +312,14 @@ export function replayOfflineOperations(): Promise<void> {
       // Recheck after each await: logout/account switching can happen during replay.
       const token = tokens.get(entry.role);
       if (
-        entry.ownerFingerprint !== (await identityFingerprint(tokenOwner(token))) ||
-        tokens.get(entry.role) !== token ||
+        tokens.getSessionId(entry.role) !== entry.sessionId ||
         !localStorage.getItem(queuePrefix + entry.id)
       )
         continue;
       let response;
       try {
         response = await sendWithRefresh(entry.path, "PATCH", token, entry.body, entry.role, true);
-        const currentToken = tokens.get(entry.role);
-        if (
-          response.status === 401 ||
-          entry.ownerFingerprint !== (await identityFingerprint(tokenOwner(currentToken))) ||
-          tokens.get(entry.role) !== currentToken
-        )
-          break;
+        if (response.status === 401 || tokens.getSessionId(entry.role) !== entry.sessionId) break;
       } catch (error) {
         if (!(error instanceof TypeError) && !(error instanceof ApiError)) throw error;
         break;
