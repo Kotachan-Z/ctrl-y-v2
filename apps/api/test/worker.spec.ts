@@ -1,8 +1,11 @@
+import { buildPushPayload } from "@block65/webcrypto-web-push";
 import { beforeEach, expect, test, vi } from "vitest";
 
 import type { createApp } from "../src/server.js";
 import type { Env } from "../src/worker.js";
 import { vapidEnv } from "./vapid-fixture.js";
+
+vi.mock("@block65/webcrypto-web-push", () => ({ buildPushPayload: vi.fn() }));
 
 const mocks = vi.hoisted(() => ({
   database: vi.fn(),
@@ -146,4 +149,60 @@ test("cleanup waits for background work even if the handler rejects", async () =
   release();
   await Promise.all(pending);
   expect(end).toHaveBeenCalledTimes(1);
+});
+
+test("scheduled delivery deletes successful jobs and closes its database", async () => {
+  const { default: worker } = await import("../src/worker.js");
+  const finishPushRetry = vi.fn().mockResolvedValue(undefined);
+  const end = vi.fn().mockResolvedValue(undefined);
+  const repository = {
+    claimPushRetries: vi
+      .fn()
+      .mockResolvedValue([{ id: "job", parentId: "parent", taskName: "task", attempts: 1 }]),
+    ownsPushRetry: vi.fn().mockResolvedValue(true),
+    parentById: vi.fn().mockResolvedValue({
+      pushSubscription: {
+        endpoint: "https://push.example.test/sub",
+        keys: { p256dh: "key", auth: "auth" },
+      },
+    }),
+    finishPushRetry,
+  };
+  mocks.database.mockReturnValue({ db: repository, sql: { end } });
+  vi.mocked(buildPushPayload).mockResolvedValue({
+    method: "post",
+    headers: {
+      authorization: "vapid test",
+      ttl: "2419200",
+      "content-encoding": "aes128gcm",
+      "content-length": "0",
+      "content-type": "application/octet-stream",
+    },
+    body: new Uint8Array(),
+  });
+  const send = vi.fn().mockResolvedValue(new Response(null, { status: 201 }));
+  vi.stubGlobal("fetch", send);
+  try {
+    await worker.scheduled(
+      { cron: "*/5 * * * *", scheduledTime: Date.now(), noRetry() {} },
+      bindings(),
+    );
+    expect(send).toHaveBeenCalledOnce();
+  } finally {
+    vi.unstubAllGlobals();
+  }
+  expect(finishPushRetry).toHaveBeenCalledWith("job", 1, undefined);
+  expect(end).toHaveBeenCalledOnce();
+});
+test("scheduled claim failure still closes its connection", async () => {
+  const { default: worker } = await import("../src/worker.js");
+  const end = vi.fn().mockResolvedValue(undefined);
+  mocks.database.mockReturnValue({
+    db: { claimPushRetries: vi.fn().mockRejectedValue(new Error("db failed")) },
+    sql: { end },
+  });
+  await expect(
+    worker.scheduled({ cron: "*/5 * * * *", scheduledTime: Date.now(), noRetry() {} }, bindings()),
+  ).rejects.toThrow("db failed");
+  expect(end).toHaveBeenCalledOnce();
 });

@@ -19,3 +19,6 @@ binding = "HYPERDRIVE"
 # wrangler hyperdrive create <name> --connection-string=<supabase-connection-string> --caching-disabled
 # Paste the resulting id below before deploying.
 id = "585e296accb4488290bdc846ec1a08e9"
+
+[triggers]
+crons = ["*/5 * * * *"]

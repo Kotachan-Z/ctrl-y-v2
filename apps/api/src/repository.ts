@@ -1,5 +1,5 @@
-import { children, parents, payroll, refreshTokens, tasks } from "@ctrl-y/database";
-import { and, count, eq, gt, gte, isNull, lt, sql } from "drizzle-orm";
+import { children, parents, payroll, pushRetryQueue, refreshTokens, tasks } from "@ctrl-y/database";
+import { and, count, eq, gt, gte, isNull, lt, lte, sql } from "drizzle-orm";
 import type { PgDatabase, PgQueryResultHKT } from "drizzle-orm/pg-core";
 
 import type { Identity } from "./auth.js";
@@ -57,6 +57,56 @@ export function createRepository<T extends PgQueryResultHKT, S extends Record<st
   db: PgDatabase<T, S>,
 ) {
   return {
+    async enqueuePushRetry(
+      parentId: string,
+      taskName: string,
+      lastError: string,
+      nextAttemptAt: Date,
+    ) {
+      await db.insert(pushRetryQueue).values({ parentId, taskName, lastError, nextAttemptAt });
+    },
+    async claimPushRetries(now: Date, limit = 25) {
+      return db.transaction(async (tx) => {
+        const rows = await tx
+          .select()
+          .from(pushRetryQueue)
+          .where(lte(pushRetryQueue.nextAttemptAt, now))
+          .orderBy(pushRetryQueue.nextAttemptAt, pushRetryQueue.id)
+          .limit(limit)
+          .for("update", { skipLocked: true });
+        const claimed = [];
+        for (const row of rows) {
+          const [job] = await tx
+            .update(pushRetryQueue)
+            .set({
+              attempts: row.attempts + 1,
+              // Recover abandoned work after a crash without holding locks during fetch.
+              nextAttemptAt: new Date(now.getTime() + 10 * 60_000),
+            })
+            .where(eq(pushRetryQueue.id, row.id))
+            .returning();
+          claimed.push(job);
+        }
+        return claimed;
+      });
+    },
+    async ownsPushRetry(id: string, attempts: number) {
+      const rows = await db
+        .select({ id: pushRetryQueue.id })
+        .from(pushRetryQueue)
+        .where(and(eq(pushRetryQueue.id, id), eq(pushRetryQueue.attempts, attempts)))
+        .limit(1);
+      return rows.length > 0;
+    },
+    async finishPushRetry(
+      id: string,
+      attempts: number,
+      retry?: { nextAttemptAt: Date; lastError: string },
+    ) {
+      const owned = and(eq(pushRetryQueue.id, id), eq(pushRetryQueue.attempts, attempts));
+      if (retry) await db.update(pushRetryQueue).set(retry).where(owned);
+      else await db.delete(pushRetryQueue).where(owned);
+    },
     async createRefreshToken(identity: Identity, refresh: { tokenHash: string; expiresAt: Date }) {
       const id = crypto.randomUUID();
       await db.insert(refreshTokens).values({

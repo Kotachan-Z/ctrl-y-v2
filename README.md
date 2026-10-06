@@ -150,10 +150,12 @@ Worker・CIのbundle検証・手動デプロイworkflowは実装済みです。�
 - `PUT /api/parents/push-subscription`: 親のみ、ブラウザの`{ endpoint, keys: { p256dh, auth } }`を保存・上書きします（親ごとに1件）。
 - `DELETE /api/parents/push-subscription`: 親のみ、自分の購読を解除します。
 - 子供のIN_PROGRESS → WAIT_REVIEWへの完了報告で親へ通知。親の差し戻しでは送信しません。
-- 送信はレスポンスを待たせないbest-effort。404/410の無効な購読は自動削除し、その他の失敗はログのみ。永続キュー・再送保証はありません。
+- 送信はレスポンスを待たせないbest-effort。404/410の無効な購読は従来どおり更新前の購読と一致する場合のみ削除します。一時的な失敗（ネットワーク・5秒タイムアウト・408・429・5xx）のみDBの `push_retry_queue` に保存します。その他のHTTPエラーや暗号化失敗は再送しません。
 - `VAPID_PUBLIC_KEY`・`VAPID_PRIVATE_KEY`・`VAPID_SUBJECT`（`mailto:`または`https:`の連絡先URI）が必須。不足・形式不正はアプリ初期化時にエラーになります。
   `npx web-push generate-vapid-keys`で鍵を生成し、`apps/api/.env.local`に設定してください。`.env.example`の値は置換必須のプレースホルダーです。Workersでは同名Secretを設定します。
-- 購読UI・PWA・service workerによる表示はPhase 2eで実装済みです。Workersでは `waitUntil` で応答後の通知処理を継続します。確実な配信には今後永続キューが必要です。
+- 購読UI・PWA・service workerによる表示はPhase 2eで実装済みです。Workersでは `waitUntil` で応答後の通知処理を継続します。再送は本番WorkersのCron Triggerで5分おきに最大25件処理します。初回送信とは別に最大5回、1分→5分→15分→1時間→6時間の間隔で再送予約し、期限後のCronで送信します。成功・購読なし・恒久的失敗・上限到達で行を削除します。毎回最新の購読を参照し、キューにはendpoint・鍵や例外本文を保存しません。
+- Cronの重複実行は行ロックと10分のリースで抑制し、停止した処理はリース満了後に回収します。送信成功後のDB障害などでは重複通知があり得ます。初回のキュー保存自体が失敗した場合も配信保証はありません。
+- ローカルBun開発サーバー（`apps/api/src/entry.ts`）でもキューへ追加されますが、自動処理はありません。自動再送は本番Workersのみ対応です。本番デプロイ前に `bun run --filter @ctrl-y/database migration:production` でキューテーブルを適用してください。
 
 ## Phase 2e PWA
 
