@@ -55,7 +55,7 @@ README から移した各機能の詳細仕様です。
   `npx web-push generate-vapid-keys`で鍵を生成し、`apps/api/.env.local`に設定してください。`.env.example`の値は置換必須のプレースホルダーです。Workersでは同名Secretを設定します。
 - 購読UI・PWA・service workerによる表示はPhase 2eで実装済みです。Workersでは `waitUntil` で応答後の通知処理を継続します。再送は本番WorkersのCron Triggerで5分おきに最大25件処理します。初回送信とは別に最大5回、1分→5分→15分→1時間→6時間の間隔で再送予約し、期限後のCronで送信します。成功・購読なし・恒久的失敗・上限到達で行を削除します。毎回最新の購読を参照し、キューにはendpoint・鍵や例外本文を保存しません。
 - Cronの重複実行は行ロックと10分のリースで抑制し、停止した処理はリース満了後に回収します。送信成功後のDB障害などでは重複通知があり得ます。初回のキュー保存自体が失敗した場合も配信保証はありません。
-- ローカルBun開発サーバー（`apps/api/src/entry.ts`）でもキューへ追加されますが、自動処理はありません。自動再送は本番Workersのみ対応です。本番デプロイ前に `bun run --filter @ctrl-y/database migration:production` でキューテーブルを適用してください。
+- ローカルBun開発サーバー（`apps/api/src/entry.ts`）でもキューへ追加されますが、自動処理はありません。自動再送は本番Workersのみ対応です。本番のキューテーブルはデプロイworkflowでmigrationを自動適用・検証します。
 
 ## Phase 2e PWA
 
@@ -77,4 +77,4 @@ README から移した各機能の詳細仕様です。
 - ローカルは `apps/api/.env.local` の `RESEND_API_KEY` を空にすると、APIコンソールにリンクを出します。実メールは送りません。`WEB_ORIGIN=http://127.0.0.1:5173` を設定します。
 - 本番はResendで送信ドメインを検証し、送信権限を持つAPIキーを作成してください。`bunx wrangler secret put RESEND_API_KEY` と `bunx wrangler secret put RESEND_FROM_EMAIL` でキー・送信元（例 `Ctrl-Y <noreply@example.com>`）を設定し、`WEB_ORIGIN` に公開WebのHTTPSオリジンを設定します。同名の値を `.dev.vars` に設定すればWorkersローカル検証にも使えます。本番では未設定でもリンクをログ出力しません。
 - [Resend HTTP API](https://resend.com/docs/api-reference/emails/send-email)へ送信します。10秒でタイムアウトし、失敗は秘密値を含めずログに記録します。Workersでは`waitUntil`で配信処理を継続し、ローカルBunでも配信完了を待たずに応答します。永続キューや自動再送はありません。
-- デプロイ前に追加migrationを適用してください。ローカルは `bun run --filter @ctrl-y/database migration`、本番は既存の `migration:production` 手順を使います。
+- 追加migrationは、本番ではデプロイworkflowが自動適用・検証します。ローカルでは `bun run --filter @ctrl-y/database migration` を実行してください。

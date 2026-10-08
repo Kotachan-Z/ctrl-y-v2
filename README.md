@@ -82,6 +82,12 @@ mise run dev
 コミット時は lefthook が lockfile 検証 → 整形 → lint → 型検査 → ビルドを自動で実行します。
 DB 関連は `bun run --filter @ctrl-y/database <generate | migration | seed | verify>` で実行します。
 
+## CI
+
+- `ci.yml`: 整形・lint・型検査・テスト・ビルド、ローカル DB の migration・seed・verify と E2E テストを実行します。`generate` を実行して未追跡ファイルを含む migration の差分を検出し、`schema.ts` の変更に対応する migration が生成・コミットされていない PR を失敗させます。標準入力を `/dev/null` にして生成を実行し、180秒でタイムアウトします。時間超過にはランナーの遅延や対話入力など複数の原因が考えられます。失敗時は `bun run --filter @ctrl-y/database generate` をローカルで実行し、必要な対話入力を解決して結果をコミットしてください。
+- `ci.yml` はPRのベースブランチとの差分（push・手動実行は直前コミットとの差分）で、新規追加された `packages/database/migrations/*.sql` のみを検査します。`DROP TABLE`、`DROP COLUMN`、`DROP CONSTRAINT`、`TRUNCATE`、`ALTER COLUMN ... TYPE`、`DROP TYPE`、`DROP INDEX` は大文字・小文字を問わず失敗させます。本番へ自動適用されるため、人間によるレビューが必要です。レビュー後の明示的な許可は、対象SQLファイルの先頭の `--` コメント欄（SQLより前、空行は可）に **`-- destructive-change: reviewed`** を1行追加してください。CIとデプロイは独立して起動するため、mainへのマージにはCI成功を必須とするブランチ保護を設定してください。
+- `deploy.yml`: Web ビルド → 本番 DB の migration 適用 → `verify:production` による全SQLのSHA-256と本番migration履歴の照合 → Worker と静的アセットのデプロイの順に実行します。適用・照合が失敗した場合はデプロイしません。既存の Cloudflare secrets に加えて `PRODUCTION_DATABASE_URL` secret が必要です。Supabase ダッシュボードから **Session pooler の接続文字列（ポート5432）** をそのままコピーしてください。ホストの接頭辞は世代によって `aws-0`、`aws-1` などと異なります。Transaction pooler（ポート6543）は使用しないでください。migrator は全migrationを単一トランザクションで実行するため、Transaction poolerでは失敗する可能性があります。直接接続ホスト `db.PROJECT_REF.supabase.co` は IPv6 のみで、IPv4 の GitHub Actions ホストランナーから到達できません。
+
 ## ドキュメント
 
 - [機能仕様](docs/features.md) — 認証・給与集計・通知・PWA・パスワードリセットの詳細

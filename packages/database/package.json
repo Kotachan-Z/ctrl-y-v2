@@ -13,6 +13,7 @@
     "generate": "drizzle-kit generate",
     "migration": "drizzle-kit migrate",
     "migration:production": "drizzle-kit migrate --config drizzle.production.config.ts",
+    "verify:production": "bun src/verify-production.ts",
     "seed": "bun src/seed.ts",
     "verify": "bun src/verify.ts"
   },
