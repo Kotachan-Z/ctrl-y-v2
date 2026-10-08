@@ -54,7 +54,8 @@ export default {
     const pathname = getPath(request);
     if (pathname !== "/api" && !pathname.startsWith("/api/")) return env.ASSETS.fetch(request);
 
-    // Keep in sync with the three limit() routes in server.ts. One IP budget
+    // Keep in sync with the three limit() routes in routes/parents.ts and
+    // routes/children.ts. One IP budget
     // spans all authentication routes, independent of identifiers and outcomes.
     const isAuthRequest =
       request.method === "POST" &&
