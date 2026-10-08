@@ -18,7 +18,7 @@ binding = "HYPERDRIVE"
 # Requires your own Cloudflare/Supabase accounts:
 # wrangler hyperdrive create <name> --connection-string=<supabase-connection-string> --caching-disabled
 # Paste the resulting id below before deploying.
-id = "585e296accb4488290bdc846ec1a08e9"
+id = "82f953f8c5a64fe5a2c76edfa61cedbf"
 
 # Account-unique namespace; counters are per Cloudflare location, not global.
 [[ratelimits]]
