@@ -17,6 +17,8 @@ jobs:
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
       - uses: oven-sh/setup-bun@v2
         with:
           bun-version: "1.3.14"
@@ -27,6 +29,73 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-${{ runner.arch }}-bun-1.3.14-
       - run: bun install --frozen-lockfile
+      - name: Check new migrations for destructive DDL
+        env:
+          PR_BASE_REF: ${{ github.base_ref }}
+        run: |
+          python3 <<'PYTHON'
+          import os
+          from pathlib import Path
+          import re
+          import subprocess
+          import sys
+
+          base = f"origin/{os.environ['PR_BASE_REF']}...HEAD" if os.environ.get("PR_BASE_REF") else "HEAD^..HEAD"
+          paths = subprocess.check_output([
+              "git", "diff", "--diff-filter=A", "--name-only", "-z", base,
+              "--", "packages/database/migrations/",
+          ]).decode().split("\0")
+          pattern = re.compile(
+              r"\bDROP\s+(?:TABLE|COLUMN|CONSTRAINT|TYPE|INDEX)\b"
+              r"|\bTRUNCATE\b"
+              r"|\bALTER\s+COLUMN\b[^;]*?\bTYPE\b",
+              re.IGNORECASE,
+          )
+          failed = False
+          for filename in filter(None, paths):
+              path = Path(filename)
+              if path.parent != Path("packages/database/migrations") or path.suffix != ".sql":
+                  continue
+              sql = path.read_text()
+              reviewed = False
+              for line in sql.splitlines():
+                  line = line.strip()
+                  if line == "-- destructive-change: reviewed":
+                      reviewed = True
+                  elif line and not line.startswith("--"):
+                      break
+              if reviewed:
+                  continue
+              # Ignore comments, preserving whitespace between SQL tokens.
+              sql = re.sub(r"/\*.*?\*/|--[^\n]*", " ", sql, flags=re.DOTALL)
+              matches = [" ".join(match.group().split()) for match in pattern.finditer(sql)]
+              if matches:
+                  failed = True
+                  print(f"{filename}: {', '.join(matches)}")
+          if failed:
+              print("::error::Destructive DDL detected. These migrations auto-apply to production and require human review. After review, opt in per file by adding the exact comment -- destructive-change: reviewed in the leading -- comment lines, before any SQL.")
+              sys.exit(1)
+          print("New migration destructive DDL check: OK")
+          PYTHON
+      - name: Check for missing database migrations
+        run: |
+          if timeout --kill-after=5s 180s bun run --filter @ctrl-y/database generate < /dev/null; then
+            :
+          else
+            status=$?
+            if [[ "$status" -eq 124 || "$status" -eq 137 ]]; then
+              echo "::error::drizzle-kit generate did not complete within the time limit (180s). Possible causes include runner slowness or an interactive prompt (e.g. for a possible column rename). Run bun run --filter @ctrl-y/database generate locally, investigate the cause, and commit any generated migrations."
+            else
+              echo "::error::drizzle-kit generate failed. Run bun run --filter @ctrl-y/database generate locally, fix the error, and commit the result."
+            fi
+            exit "$status"
+          fi
+          changes=$(git status --porcelain --untracked-files=all -- packages/database/migrations/)
+          if [[ -n "$changes" ]]; then
+            printf '%s\n' "$changes"
+            echo "::error::schema.ts was changed but the migration was not generated/committed. Run bun run --filter @ctrl-y/database generate locally and commit the result."
+            exit 1
+          fi
       - run: bun --bun oxfmt --check
       - run: bun --bun oxlint
       - run: bun run type-check
