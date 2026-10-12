@@ -32,51 +32,7 @@ jobs:
       - name: Check new migrations for destructive DDL
         env:
           PR_BASE_REF: ${{ github.base_ref }}
-        run: |
-          python3 <<'PYTHON'
-          import os
-          from pathlib import Path
-          import re
-          import subprocess
-          import sys
-
-          base = f"origin/{os.environ['PR_BASE_REF']}...HEAD" if os.environ.get("PR_BASE_REF") else "HEAD^..HEAD"
-          paths = subprocess.check_output([
-              "git", "diff", "--diff-filter=A", "--name-only", "-z", base,
-              "--", "packages/database/migrations/",
-          ]).decode().split("\0")
-          pattern = re.compile(
-              r"\bDROP\s+(?:TABLE|COLUMN|CONSTRAINT|TYPE|INDEX)\b"
-              r"|\bTRUNCATE\b"
-              r"|\bALTER\s+COLUMN\b[^;]*?\bTYPE\b",
-              re.IGNORECASE,
-          )
-          failed = False
-          for filename in filter(None, paths):
-              path = Path(filename)
-              if path.parent != Path("packages/database/migrations") or path.suffix != ".sql":
-                  continue
-              sql = path.read_text()
-              reviewed = False
-              for line in sql.splitlines():
-                  line = line.strip()
-                  if line == "-- destructive-change: reviewed":
-                      reviewed = True
-                  elif line and not line.startswith("--"):
-                      break
-              if reviewed:
-                  continue
-              # Ignore comments, preserving whitespace between SQL tokens.
-              sql = re.sub(r"/\*.*?\*/|--[^\n]*", " ", sql, flags=re.DOTALL)
-              matches = [" ".join(match.group().split()) for match in pattern.finditer(sql)]
-              if matches:
-                  failed = True
-                  print(f"{filename}: {', '.join(matches)}")
-          if failed:
-              print("::error::Destructive DDL detected. These migrations auto-apply to production and require human review. After review, opt in per file by adding the exact comment -- destructive-change: reviewed in the leading -- comment lines, before any SQL.")
-              sys.exit(1)
-          print("New migration destructive DDL check: OK")
-          PYTHON
+        run: bun run --filter @ctrl-y/database check:migrations
       - name: Check for missing database migrations
         run: |
           if timeout --kill-after=5s 180s bun run --filter @ctrl-y/database generate < /dev/null; then

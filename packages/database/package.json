@@ -15,7 +15,10 @@
     "migration:production": "drizzle-kit migrate --config drizzle.production.config.ts",
     "verify:production": "bun src/verify-production.ts",
     "seed": "bun src/seed.ts",
-    "verify": "bun src/verify.ts"
+    "verify": "bun src/verify.ts",
+    "check:migrations": "bun src/check-migrations.ts",
+    "preflight:production": "bun src/preflight-production.ts",
+    "test": "bun test src"
   },
   "dependencies": {
     "@electric-sql/pglite": "0.4.4",

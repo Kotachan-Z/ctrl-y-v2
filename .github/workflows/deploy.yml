@@ -40,6 +40,30 @@ jobs:
       - run: bun install --frozen-lockfile
       - name: Build web app
         run: bun run --filter @ctrl-y/web build
+      # Deploy runs independently of CI success, so check generation here too.
+      - name: Check for missing database migrations
+        run: |
+          if timeout --kill-after=5s 180s bun run --filter @ctrl-y/database generate < /dev/null; then
+            :
+          else
+            status=$?
+            if [[ "$status" -eq 124 || "$status" -eq 137 ]]; then
+              echo "::error::drizzle-kit generate did not complete within the time limit (180s). Possible causes include runner slowness or an interactive prompt (e.g. for a possible column rename). Run bun run --filter @ctrl-y/database generate locally, investigate the cause, and commit any generated migrations."
+            else
+              echo "::error::drizzle-kit generate failed. Run bun run --filter @ctrl-y/database generate locally, fix the error, and commit the result."
+            fi
+            exit "$status"
+          fi
+          changes=$(git status --porcelain --untracked-files=all -- packages/database/migrations/)
+          if [[ -n "$changes" ]]; then
+            printf '%s\n' "$changes"
+            echo "::error::schema.ts was changed but the migration was not generated/committed. Run bun run --filter @ctrl-y/database generate locally and commit the result."
+            exit 1
+          fi
+      - name: Preflight production database migrations
+        env:
+          PRODUCTION_DATABASE_URL: ${{ secrets.PRODUCTION_DATABASE_URL }}
+        run: bun run --filter @ctrl-y/database preflight:production
       - name: Apply production database migrations
         # GitHub Actions hosted runners are IPv4-only; Supabase's direct host
         # db.PROJECT_REF.supabase.co is IPv6-only (AAAA record only), so it is unreachable.
