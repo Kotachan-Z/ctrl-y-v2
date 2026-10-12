@@ -75,12 +75,28 @@ mise run dev
 | `bun run dev`      | DB を残したまま起動                        |
 | `mise run check`   | 整形・lint・型検査・単体テスト・ビルド     |
 | `mise run format`  | コード整形                                 |
-| `bun run test`     | API の単体テスト（Vitest）                 |
+| `bun run test`     | API・migration ガードの単体テスト          |
 | `bun run test:e2e` | E2E テスト（開発サーバーを止めてから実行） |
 | `bun run build`    | Web ビルドと Workers バンドルの検証        |
 
 コミット時は lefthook が lockfile 検証 → 整形 → lint → 型検査 → ビルドを自動で実行します。
 DB 関連は `bun run --filter @ctrl-y/database <generate | migration | seed | verify>` で実行します。
+
+## CI
+
+- `ci.yml`: 整形・lint・型検査・テスト・ビルド、ローカル DB の migration・seed・verify と E2E テストを実行します。`generate` を実行して未追跡ファイルを含む migration の差分を検出し、`schema.ts` の変更に対応する migration が生成・コミットされていない PR を失敗させます。標準入力を `/dev/null` にして生成を実行し、180秒でタイムアウトします。時間超過にはランナーの遅延や対話入力など複数の原因が考えられます。失敗時は `bun run --filter @ctrl-y/database generate` をローカルで実行し、必要な対話入力を解決して結果をコミットしてください。
+- `ci.yml` はPRのベースブランチとの差分（push・手動実行は直前コミットとの差分）で、新規追加された `packages/database/migrations/*.sql` のみを検査します。`DROP TABLE`、`DROP COLUMN`、`DROP CONSTRAINT`、`TRUNCATE`、`ALTER COLUMN ... TYPE`、`DROP TYPE`、`DROP INDEX` は大文字・小文字を問わず失敗させます。本番へ自動適用されるため、人間によるレビューが必要です。レビュー後の明示的な許可は、対象SQLファイルの先頭の `--` コメント欄（SQLより前、空行は可）に **`-- destructive-change: reviewed`** を1行追加してください。この検査は共有モジュールを使う `check:migrations` CLI で実行する早期フィードバックです。ブランチ保護は採用せず、本番適用経路側でガードします。
+- `deploy.yml`: Web ビルド → 生成忘れ検査（CIと同じ `generate` + `git status`）→ `preflight:production`（履歴整合性・適用予定SQLの破壊的DDL検査）→ 本番 DB の migration 適用 → `verify:production` による全SQLのSHA-256と本番migration履歴の照合 → Worker と静的アセットのデプロイの順に実行します。各検査・適用・照合が失敗した場合はデプロイしません。CI成功に依存せず起動するため、生成忘れ検査もデプロイ側で実行します。既存の Cloudflare secrets に加えて `PRODUCTION_DATABASE_URL` secret が必要です。Supabase ダッシュボードから **Session pooler の接続文字列（ポート5432）** をそのままコピーしてください。ホストの接頭辞は世代によって `aws-0`、`aws-1` などと異なります。Transaction pooler（ポート6543）は使用しないでください。migrator は全migrationを単一トランザクションで実行するため、Transaction poolerでは失敗する可能性があります。直接接続ホスト `db.PROJECT_REF.supabase.co` は IPv6 のみで、IPv4 の GitHub Actions ホストランナーから到達できません。
+
+### migration の適用前ガード
+
+ブランチ保護は採用していません。CIの `check:migrations` は新規SQLへの早期フィードバックで、本番適用経路の `preflight:production` が履歴整合性と適用予定SQLを検査します。CI成功に依存せずデプロイが起動するため、deploy側でも `generate` と未追跡ファイルを含む `git status` で生成忘れを検出します。
+
+journal の `when` は重複なく厳密に増加し、tag も一意である必要があります。本番履歴はローカルjournalの先頭から連続する接頭辞とハッシュ・時刻の両方で一致する必要があります。drizzleはハッシュの有無ではなく、履歴が空なら全件、それ以外は最新 `created_at` より大きい `when` のみを適用します。古い `when` の未記録migrationや適用済みSQLの改変などは適用前に停止し、レビューのマーカーでも許可しません。履歴テーブルが無ければ全件を検査しますが、履歴が無いことはDBが空である証明にはなりません。
+
+破壊的DDLを人間がレビューした場合、適用前のSQLの先頭 `--` コメント欄（SQL開始前、空行可）に `-- destructive-change: reviewed` を追加します。このマーカーは適用前にのみ有効で、適用済みmigrationへの後付け承認には使えません。SQL全文をハッシュ化するため、コメント追記もハッシュを変え、履歴不整合になります。検査はコメントを除去した正規表現による注意喚起で、完全なSQLパーサーではありません。完全なSQL安全性検証ではなく、`ALTER TABLE t DROP c` のような COLUMN 省略形や、DELETE／UPDATEによるデータ破壊を網羅的には検出できません。検出対象には `ALTER TABLE ... RENAME COLUMN ... TO`、`ALTER TABLE ... RENAME TO`、既存カラムの `ALTER COLUMN ... SET NOT NULL`、`DROP SCHEMA`、`DROP VIEW`、`DROP MATERIALIZED VIEW`、`DROP SEQUENCE`、`DELETE FROM` も含みます。新規カラムの `ADD COLUMN ... NOT NULL` は検出対象外です。
+
+migration適用からWorkerデプロイ完了まで、旧Workerが新しいスキーマを使います。破壊的変更、特に削除は「追加 → コード移行 → 後続リリースで削除」の段階的変更を検討してください。
 
 ## ドキュメント
 
