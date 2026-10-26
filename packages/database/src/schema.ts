@@ -29,6 +29,21 @@ export const parents = pgTable("parents", {
   pushSubscription: jsonb().$type<{ endpoint: string; keys: { p256dh: string; auth: string } }>(),
   createdAt: createdAt(),
 });
+export const pushSubscriptions = pgTable(
+  "push_subscriptions",
+  {
+    id: uuid().primaryKey().defaultRandom(),
+    parentId: uuid()
+      .notNull()
+      .references(() => parents.id, { onDelete: "cascade" }),
+    endpoint: text().notNull().unique(),
+    p256dh: text().notNull(),
+    auth: text().notNull(),
+    createdAt: createdAt(),
+    updatedAt: createdAt(),
+  },
+  (t) => [index("push_subscriptions_parent_idx").on(t.parentId)],
+);
 export const children = pgTable(
   "children",
   {
@@ -99,6 +114,7 @@ export const pushRetryQueue = pgTable(
     parentId: uuid()
       .notNull()
       .references(() => parents.id, { onDelete: "cascade" }),
+    subscriptionId: uuid().references(() => pushSubscriptions.id, { onDelete: "cascade" }),
     taskName: text().notNull(),
     attempts: integer().notNull().default(0),
     nextAttemptAt: timestamp({ withTimezone: true }).notNull(),

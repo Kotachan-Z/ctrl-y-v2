@@ -43,6 +43,13 @@
       "when": 1792982764029,
       "tag": "20261026024604_payroll_jst_cutoff",
       "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "7",
+      "when": 1792992137759,
+      "tag": "20261026052217_multi_device_push",
+      "breakpoints": true
     }
   ]
 }

@@ -33,14 +33,30 @@ export function registerPushSubscriptionRoutes(app: Hono<AuthEnv>, deps: RouteDe
       !data.keys.auth.trim()
     )
       throw new HTTPException(400, { message: "通知の購読情報を確認してください" });
-    await repo().setPushSubscription(familyId(c.get("identity")), {
+    const saved = await repo().setPushSubscription(familyId(c.get("identity")), {
       endpoint: data.endpoint,
       keys: { p256dh: data.keys.p256dh, auth: data.keys.auth },
     });
+    if (!saved)
+      throw new HTTPException(409, { message: "この通知の購読は別の親に登録されています" });
     return c.json({ success: true });
   });
   app.delete("/api/parents/push-subscription", auth, parentOnly, async (c) => {
-    await repo().setPushSubscription(familyId(c.get("identity")), null);
+    const raw = await c.req.text();
+    let endpoint: string | undefined;
+    if (raw.length) {
+      let data: unknown;
+      try {
+        data = JSON.parse(raw);
+      } catch {
+        throw new HTTPException(400, { message: "通知の購読情報を確認してください" });
+      }
+      if (!isRecord(data) || typeof data.endpoint !== "string" || !data.endpoint.trim())
+        throw new HTTPException(400, { message: "通知の購読情報を確認してください" });
+      endpoint = data.endpoint;
+    }
+    if (endpoint !== undefined)
+      await repo().deletePushSubscriptions(familyId(c.get("identity")), endpoint);
     return c.json({ success: true });
   });
 }

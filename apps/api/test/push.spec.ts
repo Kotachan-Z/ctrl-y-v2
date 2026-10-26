@@ -1,5 +1,5 @@
 import { buildPushPayload } from "@block65/webcrypto-web-push";
-import { children, parents, pushRetryQueue } from "@ctrl-y/database";
+import { children, parents, pushRetryQueue, pushSubscriptions } from "@ctrl-y/database";
 import { afterAll, afterEach, beforeAll, beforeEach, expect, test, vi } from "vitest";
 
 import { issueToken } from "../src/auth.js";
@@ -49,12 +49,13 @@ afterAll(async () => {
 });
 beforeEach(async () => {
   await fixture.db.delete(pushRetryQueue);
+  await fixture.db.delete(pushSubscriptions);
   build.mockReset();
   build.mockResolvedValue(payload);
   send.mockReset();
   send.mockResolvedValue(new Response(null, { status: 201 }));
   vi.stubGlobal("fetch", send);
-  await fixture.repository.setPushSubscription(parentId, null);
+  await fixture.repository.deletePushSubscriptions(parentId);
 });
 afterEach(() => {
   vi.unstubAllGlobals();
@@ -66,7 +67,10 @@ function request(path: string, method = "GET", token = parent, data?: unknown) {
     body: data === undefined ? undefined : JSON.stringify(data),
   });
 }
-const stored = async () => (await fixture.repository.parentById(parentId))?.pushSubscription;
+const stored = async () => {
+  const [value] = await fixture.repository.pushSubscriptionsForParent(parentId);
+  return value ? { endpoint: value.endpoint, keys: value.keys } : null;
+};
 async function task() {
   const record = await fixture.repository.createTask(parentId, {
     name: "おそうじ",
@@ -87,7 +91,10 @@ test("public key is available without authentication and never includes private 
   expect(await response.json()).toEqual({ publicKey: vapidEnv.VAPID_PUBLIC_KEY });
 });
 test("subscription writes require a parent and affect only that parent", async () => {
-  await fixture.repository.setPushSubscription(otherId, subscription);
+  await fixture.repository.setPushSubscription(otherId, {
+    ...subscription,
+    endpoint: subscription.endpoint + "/other",
+  });
   for (const method of ["PUT", "DELETE"]) {
     expect((await request("/parents/push-subscription", method, "", subscription)).status).toBe(
       401,
@@ -107,13 +114,15 @@ test("subscription writes require a parent and affect only that parent", async (
         })
       ).status,
     ).toBe(200);
-    expect(await stored()).toEqual({ ...subscription, endpoint });
+    expect(await fixture.repository.pushSubscriptionsForParent(parentId)).toEqual(
+      expect.arrayContaining([expect.objectContaining({ ...subscription, endpoint })]),
+    );
   }
   for (let i = 0; i < 2; i++) {
     expect((await request("/parents/push-subscription", "DELETE")).status).toBe(200);
-    expect(await stored()).toBeNull();
+    expect(await fixture.repository.pushSubscriptionsForParent(parentId)).toHaveLength(2);
   }
-  expect((await fixture.repository.parentById(otherId))?.pushSubscription).toEqual(subscription);
+  expect(await fixture.repository.pushSubscriptionsForParent(otherId)).toHaveLength(1);
 });
 test("invalid subscription bodies are rejected without changing storage", async () => {
   await fixture.repository.setPushSubscription(parentId, subscription);
@@ -247,7 +256,7 @@ test("network, lookup and cleanup failures never reject notification work", asyn
   ).resolves.toBeUndefined();
   expect(await stored()).toEqual(subscription);
   const lookup = vi
-    .spyOn(fixture.repository, "parentById")
+    .spyOn(fixture.repository, "pushSubscriptionsForParent")
     .mockRejectedValueOnce(new Error("database unavailable"));
   await expect(
     notifyReview(fixture.repository, readVapidConfig(), parentId, "task"),
@@ -419,12 +428,12 @@ test.each([4, 5])("retry limit at %i previous attempts discards the job", async 
 });
 test("retry uses the latest subscription and drops unsubscribed jobs", async () => {
   await due();
-  const replacement = { ...subscription, endpoint: `${subscription.endpoint}/new` };
+  const replacement = { ...subscription, keys: { ...subscription.keys, auth: "renewed" } };
   await fixture.repository.setPushSubscription(parentId, replacement);
   await processPushRetries(fixture.repository, readVapidConfig());
   expect(send.mock.calls[0][0]).toBe(replacement.endpoint);
   await due();
-  await fixture.repository.setPushSubscription(parentId, null);
+  await fixture.repository.deletePushSubscriptions(parentId);
   await processPushRetries(fixture.repository, readVapidConfig());
   expect(send).toHaveBeenCalledTimes(1);
   expect(await queued()).toEqual([]);
@@ -474,4 +483,158 @@ test("claims are bounded, leased, recoverable and fenced against stale completio
   expect(reclaimed).toHaveLength(25);
   await fixture.repository.finishPushRetry(first[0].id, first[0].attempts);
   expect(await queued()).toHaveLength(26);
+});
+
+const secondSubscription = { ...subscription, endpoint: subscription.endpoint + "/second" };
+test("two devices receive a child completion", async () => {
+  await fixture.repository.setPushSubscription(parentId, subscription);
+  await fixture.repository.setPushSubscription(parentId, secondSubscription);
+  expect((await submit(await task())).status).toBe(200);
+  await vi.waitFor(() => expect(send).toHaveBeenCalledTimes(2));
+  expect(send.mock.calls.map(([endpoint]) => endpoint)).toEqual(
+    expect.arrayContaining([subscription.endpoint, secondSubscription.endpoint]),
+  );
+});
+test("a dead device is removed without affecting the other device", async () => {
+  await fixture.repository.setPushSubscription(parentId, subscription);
+  await fixture.repository.setPushSubscription(parentId, secondSubscription);
+  send.mockImplementation(
+    async (endpoint) =>
+      new Response(null, {
+        status: endpoint === subscription.endpoint ? 410 : 201,
+      }),
+  );
+  await notifyReview(fixture.repository, readVapidConfig(), parentId, "task");
+  expect(await fixture.repository.pushSubscriptionsForParent(parentId)).toEqual([
+    expect.objectContaining(secondSubscription),
+  ]);
+});
+test("only the failed device is queued and retried", async () => {
+  await fixture.repository.setPushSubscription(parentId, subscription);
+  await fixture.repository.setPushSubscription(parentId, secondSubscription);
+  send.mockImplementation(
+    async (endpoint) =>
+      new Response(null, {
+        status: endpoint === subscription.endpoint ? 503 : 201,
+      }),
+  );
+  await notifyReview(fixture.repository, readVapidConfig(), parentId, "task");
+  const [failed] = (await fixture.repository.pushSubscriptionsForParent(parentId)).filter(
+    (value) => value.endpoint === subscription.endpoint,
+  );
+  expect(await queued()).toEqual([expect.objectContaining({ subscriptionId: failed.id })]);
+  await fixture.db.update(pushRetryQueue).set({ nextAttemptAt: new Date(0) });
+  send.mockClear();
+  send.mockResolvedValue(new Response(null, { status: 201 }));
+  await processPushRetries(fixture.repository, readVapidConfig());
+  expect(send).toHaveBeenCalledExactlyOnceWith(subscription.endpoint, expect.anything());
+  expect(await queued()).toEqual([]);
+});
+test("legacy retry fans out once and keeps only failed devices", async () => {
+  await due();
+  await fixture.repository.setPushSubscription(parentId, secondSubscription);
+  send.mockImplementation(
+    async (endpoint) =>
+      new Response(null, {
+        status: endpoint === subscription.endpoint ? 503 : 201,
+      }),
+  );
+  await processPushRetries(fixture.repository, readVapidConfig());
+  expect(send).toHaveBeenCalledTimes(2);
+  expect(await queued()).toEqual([
+    expect.objectContaining({ attempts: 1, subscriptionId: expect.any(String) }),
+  ]);
+});
+test("endpoint deletion affects only the requested device and cascades its retries", async () => {
+  await fixture.repository.setPushSubscription(parentId, subscription);
+  await fixture.repository.setPushSubscription(parentId, secondSubscription);
+  send.mockResolvedValue(new Response(null, { status: 503 }));
+  await notifyReview(fixture.repository, readVapidConfig(), parentId, "task");
+  expect(
+    (
+      await request("/parents/push-subscription", "DELETE", parent, {
+        endpoint: subscription.endpoint,
+      })
+    ).status,
+  ).toBe(200);
+  expect(await fixture.repository.pushSubscriptionsForParent(parentId)).toEqual([
+    expect.objectContaining(secondSubscription),
+  ]);
+  expect(await queued()).toHaveLength(1);
+  for (const data of [null, {}, [], { endpoint: 1 }, { endpoint: "" }])
+    expect((await request("/parents/push-subscription", "DELETE", parent, data)).status).toBe(400);
+  expect(await fixture.repository.pushSubscriptionsForParent(parentId)).toHaveLength(1);
+});
+test("another parent cannot take over or delete an endpoint", async () => {
+  await fixture.repository.setPushSubscription(otherId, subscription);
+  expect((await request("/parents/push-subscription", "PUT", parent, subscription)).status).toBe(
+    409,
+  );
+  expect(
+    (
+      await request("/parents/push-subscription", "DELETE", parent, {
+        endpoint: subscription.endpoint,
+      })
+    ).status,
+  ).toBe(200);
+  expect(await fixture.repository.pushSubscriptionsForParent(otherId)).toHaveLength(1);
+  expect(await stored()).toBeNull();
+});
+test("registration caps subscriptions at ten and replaces the oldest", async () => {
+  await fixture.repository.setPushSubscription(parentId, subscription);
+  await fixture.db.update(pushSubscriptions).set({ updatedAt: new Date(0) });
+  for (let i = 0; i < 10; i++)
+    await fixture.repository.setPushSubscription(parentId, {
+      ...subscription,
+      endpoint: subscription.endpoint + "/" + i,
+    });
+  const values = await fixture.repository.pushSubscriptionsForParent(parentId);
+  expect(values).toHaveLength(10);
+  expect(values.some((value) => value.endpoint === subscription.endpoint)).toBe(false);
+  await fixture.repository.setPushSubscription(parentId, {
+    ...subscription,
+    endpoint: subscription.endpoint + "/9",
+    keys: { ...subscription.keys, auth: "renewed" },
+  });
+  expect(await fixture.repository.pushSubscriptionsForParent(parentId)).toHaveLength(10);
+});
+
+test("legacy retry without subscriptions is removed", async () => {
+  await fixture.db
+    .insert(pushRetryQueue)
+    .values({ parentId, taskName: "task", nextAttemptAt: new Date(0), lastError: "http_503" });
+  await processPushRetries(fixture.repository, readVapidConfig());
+  expect(await queued()).toEqual([]);
+  expect(send).not.toHaveBeenCalled();
+});
+test("retry lookup failure does not prevent another device from receiving", async () => {
+  await due();
+  await fixture.repository.setPushSubscription(parentId, secondSubscription);
+  const lookup = vi
+    .spyOn(fixture.repository, "pushSubscriptionById")
+    .mockRejectedValueOnce(new Error("unavailable"));
+  try {
+    await processPushRetries(fixture.repository, readVapidConfig());
+    expect(send).toHaveBeenCalledTimes(1);
+    expect(await queued()).toHaveLength(1);
+  } finally {
+    lookup.mockRestore();
+  }
+});
+test("renewing an old device keeps it when the limit is exceeded", async () => {
+  await fixture.repository.setPushSubscription(parentId, subscription);
+  await fixture.db
+    .update(pushSubscriptions)
+    .set({ createdAt: new Date(0), updatedAt: new Date(0) });
+  for (let i = 0; i < 9; i++)
+    await fixture.repository.setPushSubscription(parentId, {
+      ...subscription,
+      endpoint: subscription.endpoint + "/" + i,
+    });
+  await fixture.repository.setPushSubscription(parentId, subscription);
+  await fixture.repository.setPushSubscription(parentId, secondSubscription);
+  const values = await fixture.repository.pushSubscriptionsForParent(parentId);
+  expect(values).toHaveLength(10);
+  expect(values.some((value) => value.endpoint === subscription.endpoint)).toBe(true);
+  expect(values.some((value) => value.endpoint === subscription.endpoint + "/0")).toBe(false);
 });

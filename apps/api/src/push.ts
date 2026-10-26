@@ -50,18 +50,20 @@ async function deliverReview(
   vapid: VapidConfig,
   parentId: string,
   taskName: string,
+  subscription: PushSubscription & { id: string },
   retryJob?: { id: string; attempts: number },
 ): Promise<Delivery | null> {
-  const subscription: PushSubscription | null | undefined = (await repository.parentById(parentId))
-    ?.pushSubscription;
-  if (!subscription) return { retry: false };
   const message: PushMessage = {
     data: JSON.stringify({ title: "レビュー待ち", body: `${taskName} が完了報告されました` }),
     options: { ttl: 2419200, urgency: "normal" },
   };
   let payload;
   try {
-    payload = await buildPushPayload(message, { ...subscription, expirationTime: null }, vapid);
+    payload = await buildPushPayload(
+      message,
+      { endpoint: subscription.endpoint, keys: subscription.keys, expirationTime: null },
+      vapid,
+    );
   } catch {
     console.warn("Push payload construction failed");
     return { retry: false };
@@ -104,14 +106,24 @@ export async function notifyReview(
   taskName: string,
 ): Promise<void> {
   try {
-    const result = await deliverReview(repository, vapid, parentId, taskName);
-    if (result?.retry)
-      await repository.enqueuePushRetry(
-        parentId,
-        taskName,
-        result.error,
-        new Date(Date.now() + retryDelays[0]),
-      );
+    const subscriptions = await repository.pushSubscriptionsForParent(parentId);
+    await Promise.all(
+      subscriptions.map(async (subscription) => {
+        try {
+          const result = await deliverReview(repository, vapid, parentId, taskName, subscription);
+          if (result?.retry)
+            await repository.enqueuePushRetry(
+              parentId,
+              taskName,
+              result.error,
+              new Date(Date.now() + retryDelays[0]),
+              subscription.id,
+            );
+        } catch {
+          console.warn("Push delivery or queue persistence failed");
+        }
+      }),
+    );
   } catch {
     console.warn("Push delivery or queue persistence failed");
   }
@@ -128,7 +140,12 @@ export async function processPushRetries(
         await repository.finishPushRetry(job.id, job.attempts);
         continue;
       }
-      const result = await deliverReview(repository, vapid, job.parentId, job.taskName, job);
+      const subscription = job.subscriptionId
+        ? await repository.pushSubscriptionById(job.parentId, job.subscriptionId)
+        : undefined;
+      const result = subscription
+        ? await deliverReview(repository, vapid, job.parentId, job.taskName, subscription, job)
+        : { retry: false as const };
       if (!result) continue;
       await repository.finishPushRetry(
         job.id,

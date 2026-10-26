@@ -38,70 +38,99 @@ test("manifest and service worker are available", async ({ page, request }) => {
   ).toBe(false);
 });
 
-test("parent can enable and disable notifications with a mocked push service", async ({ page }) => {
-  await page.addInitScript(() => {
-    localStorage.setItem("ctrl-y.parent-token", "test-parent");
-    let subscribed = false;
-    const subscription = {
-      toJSON: () => ({
+for (const conflicts of [0, 1, 2]) {
+  test(`parent push enable retries conflicts at most once (${conflicts})`, async ({ page }) => {
+    await page.addInitScript(() => {
+      localStorage.setItem("ctrl-y.parent-token", "test-parent");
+      let subscribed = false;
+      let generation = 0;
+      const subscription = {
         endpoint: "https://push.example.test/subscription",
-        keys: { p256dh: "key", auth: "auth" },
-      }),
-      unsubscribe: () => {
-        subscribed = false;
-        return Promise.resolve(true);
-      },
-    };
-    const registration = {
-      pushManager: {
-        getSubscription: () => Promise.resolve(subscribed ? subscription : null),
-        subscribe: (options: PushSubscriptionOptionsInit) => {
-          if (
-            !(options.applicationServerKey instanceof Uint8Array) ||
-            Array.from(options.applicationServerKey).join(",") !== "251,255,0"
-          ) {
-            throw new Error("Invalid base64url conversion");
-          }
-          subscribed = true;
-          return Promise.resolve(subscription);
+        toJSON: () => ({
+          endpoint: "https://push.example.test/subscription",
+          keys: { p256dh: "key", auth: "auth" },
+        }),
+        unsubscribe: () => {
+          localStorage.setItem(
+            "push-unsubscribes",
+            String(Number(localStorage.getItem("push-unsubscribes") ?? 0) + 1),
+          );
+          subscribed = false;
+          return Promise.resolve(true);
         },
-      },
-    };
-    Object.defineProperty(navigator, "serviceWorker", {
-      value: {
-        register: () => Promise.resolve(registration),
-        ready: Promise.resolve(registration),
-      },
-    });
-    Object.defineProperty(window, "PushManager", { value: function () {} });
-    Object.defineProperty(window, "Notification", {
-      value: { requestPermission: () => Promise.resolve("granted") },
-    });
-  });
-  await page.route("**/api/session", (route) =>
-    route.fulfill({ json: { identity: { role: "parent", id: "parent" } } }),
-  );
-  await page.route("**/api/push/public-key", (route) =>
-    route.fulfill({ json: { publicKey: "-_8A" } }),
-  );
-  const methods: string[] = [];
-  await page.route("**/api/parents/push-subscription", async (route) => {
-    methods.push(route.request().method());
-    expect(route.request().headers().authorization).toBe("Bearer test-parent");
-    if (route.request().method() === "PUT")
-      expect(route.request().postDataJSON()).toEqual({
-        endpoint: "https://push.example.test/subscription",
-        keys: { p256dh: "key", auth: "auth" },
+      };
+      const registration = {
+        pushManager: {
+          getSubscription: () => Promise.resolve(subscribed ? subscription : null),
+          subscribe: (options: PushSubscriptionOptionsInit) => {
+            if (subscribed) throw new Error("Previous subscription must be removed");
+            generation++;
+            localStorage.setItem("push-subscribes", String(generation));
+            if (
+              !(options.applicationServerKey instanceof Uint8Array) ||
+              Array.from(options.applicationServerKey).join(",") !== "251,255,0"
+            ) {
+              throw new Error("Invalid base64url conversion");
+            }
+            subscribed = true;
+            return Promise.resolve(subscription);
+          },
+        },
+      };
+      Object.defineProperty(navigator, "serviceWorker", {
+        value: {
+          register: () => Promise.resolve(registration),
+          ready: Promise.resolve(registration),
+        },
       });
-    await route.fulfill({ json: { ok: true } });
+      Object.defineProperty(window, "PushManager", { value: function () {} });
+      Object.defineProperty(window, "Notification", {
+        value: { requestPermission: () => Promise.resolve("granted") },
+      });
+    });
+    await page.route("**/api/session", (route) =>
+      route.fulfill({ json: { identity: { role: "parent", id: "parent" } } }),
+    );
+    await page.route("**/api/push/public-key", (route) =>
+      route.fulfill({ json: { publicKey: "-_8A" } }),
+    );
+    const methods: string[] = [];
+    await page.route("**/api/parents/push-subscription", async (route) => {
+      methods.push(route.request().method());
+      expect(route.request().headers().authorization).toBe("Bearer test-parent");
+      if (route.request().method() === "PUT")
+        expect(route.request().postDataJSON()).toEqual({
+          endpoint: "https://push.example.test/subscription",
+          keys: { p256dh: "key", auth: "auth" },
+        });
+      if (route.request().method() === "DELETE")
+        expect(route.request().postDataJSON()).toEqual({
+          endpoint: "https://push.example.test/subscription",
+        });
+      if (route.request().method() === "PUT" && methods.length <= conflicts)
+        await route.fulfill({
+          status: 409,
+          json: { error: "この通知の購読は別の親に登録されています" },
+        });
+      else await route.fulfill({ json: { ok: true } });
+    });
+    await page.goto("/settings/notifications");
+    await page.getByRole("button", { name: "通知を有効にする" }).click();
+    if (conflicts === 2) {
+      await expect(page.getByRole("status")).toHaveText("この通知の購読は別の親に登録されています");
+      expect(methods).toEqual(["PUT", "PUT"]);
+      expect(await page.evaluate(() => localStorage.getItem("push-unsubscribes"))).toBe("2");
+      return;
+    }
+    await expect(page.getByRole("status")).toHaveText("通知を有効にしました");
+    expect(await page.evaluate(() => localStorage.getItem("push-subscribes"))).toBe(
+      String(conflicts + 1),
+    );
+    await page.getByRole("button", { name: "通知を無効にする" }).click();
+    await expect(page.getByRole("status")).toHaveText("通知を無効にしました");
+    expect(methods).toEqual(conflicts ? ["PUT", "PUT", "DELETE"] : ["PUT", "DELETE"]);
   });
-  await page.goto("/settings/notifications");
-  await page.getByRole("button", { name: "通知を有効にする" }).click();
-  await expect(page.getByRole("status")).toHaveText("通知を有効にしました");
-  await page.getByRole("button", { name: "通知を無効にする" }).click();
-  await expect(page.getByRole("status")).toHaveText("通知を無効にしました");
-  expect(methods).toEqual(["PUT", "DELETE"]);
-});
+}
 
 test("PWA metadata refreshes online and falls back to cache offline", async ({ page, context }) => {
   await page.goto("/");
