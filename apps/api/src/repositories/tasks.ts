@@ -2,7 +2,7 @@ import { tasks } from "@ctrl-y/database";
 import { and, eq, isNull } from "drizzle-orm";
 import type { PgDatabase, PgQueryResultHKT } from "drizzle-orm/pg-core";
 
-import { recalculateTaskPayroll } from "./payroll.js";
+import { lockPayrollParent, recalculateTaskPayroll } from "./payroll.js";
 import type { TaskFields, TaskStatus } from "./types.js";
 
 export function createTasksRepository<
@@ -45,6 +45,7 @@ export function createTasksRepository<
     },
     async editTask(parentId: string, id: string, fields: Partial<TaskFields>) {
       return db.transaction(async (tx) => {
+        await lockPayrollParent(tx, parentId);
         const [task] = await tx
           .update(tasks)
           .set(fields)
@@ -56,6 +57,7 @@ export function createTasksRepository<
     },
     async deleteTask(parentId: string, id: string) {
       return db.transaction(async (tx) => {
+        await lockPayrollParent(tx, parentId);
         const [task] = await tx
           .delete(tasks)
           .where(and(eq(tasks.parentId, parentId), eq(tasks.id, id)))
@@ -80,6 +82,7 @@ export function createTasksRepository<
               : "DONE"
             : "WAIT_REVIEW";
       return db.transaction(async (tx) => {
+        await lockPayrollParent(tx, parentId);
         const [oldTask] = await tx
           .select()
           .from(tasks)
