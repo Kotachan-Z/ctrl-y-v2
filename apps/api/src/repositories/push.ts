@@ -119,7 +119,7 @@ export function createPushRepository<T extends PgQueryResultHKT, S extends Recor
           })
           .onConflictDoUpdate({
             target: pushSubscriptions.endpoint,
-            set: { ...subscription.keys, updatedAt: new Date() },
+            set: { ...subscription.keys, updatedAt: sql`now()` },
             setWhere: eq(pushSubscriptions.parentId, parentId),
           })
           .returning();
