@@ -30,6 +30,11 @@ const taskLabels = {
 
 export default function TaskBoard({ role, childId }: { role: Role; childId?: string }) {
   const [tasks, setTasks] = useState<Task[]>([]);
+  const [nextCursor, setNextCursor] = useState<string | null>(null);
+  const [loadingMore, setLoadingMore] = useState(false);
+  const [refreshing, setRefreshing] = useState(true);
+  const generation = useRef(0);
+  const doneCount = useRef(20);
   const [loaded, setLoaded] = useState(false);
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
@@ -72,20 +77,75 @@ export default function TaskBoard({ role, childId }: { role: Role; childId?: str
   }
   useEffect(() => {
     let active = true;
-    api<{ tasks: Task[] }>("/tasks", { role })
+    const current = ++generation.current;
+    setRefreshing(true);
+    setLoadingMore(false);
+    async function reloadDone() {
+      const restored: Task[] = [];
+      let cursor: string | null = null;
+      const count = doneCount.current;
+      do {
+        const page: { tasks: Task[]; nextCursor: string | null } = await api(
+          `/tasks?status=DONE&limit=${Math.min(100, count - restored.length)}${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ""}`,
+          { role },
+        );
+        if (!active) return { tasks: [], nextCursor: null };
+        restored.push(...page.tasks);
+        cursor = page.nextCursor;
+      } while (cursor && restored.length < count);
+      return { tasks: restored, nextCursor: cursor };
+    }
+    Promise.all([
+      api<{ tasks: Task[] }>("/tasks?status=TODO,IN_PROGRESS,WAIT_REVIEW", { role }),
+      reloadDone(),
+    ])
       .then((result) => {
         if (active) {
-          setTasks(result.tasks);
+          setTasks([
+            ...result[0].tasks,
+            ...result[1].tasks.filter(
+              (task) => !result[0].tasks.some((item) => item.id === task.id),
+            ),
+          ]);
+          doneCount.current = Math.max(20, result[1].tasks.length);
+          setNextCursor(result[1].nextCursor);
           setLoaded(true);
         }
       })
       .catch((e: unknown) => {
         if (active) setError(e instanceof Error ? e.message : "通信に失敗しました");
+      })
+      .finally(() => {
+        if (active) setRefreshing(false);
       });
     return () => {
       active = false;
+      if (generation.current === current) generation.current++;
     };
   }, [role, version]);
+  async function loadMore() {
+    if (!nextCursor || loadingMore || refreshing) return;
+    const current = generation.current;
+    setLoadingMore(true);
+    setError("");
+    try {
+      const page = await api<{ tasks: Task[]; nextCursor: string | null }>(
+        `/tasks?status=DONE&limit=20&cursor=${encodeURIComponent(nextCursor)}`,
+        { role },
+      );
+      if (current !== generation.current) return;
+      doneCount.current += page.tasks.length;
+      setTasks((existing) => [
+        ...existing,
+        ...page.tasks.filter((task) => !existing.some((item) => item.id === task.id)),
+      ]);
+      setNextCursor(page.nextCursor);
+    } catch (e) {
+      if (current === generation.current) report(e);
+    } finally {
+      if (current === generation.current) setLoadingMore(false);
+    }
+  }
   async function mutate(task: Task, status?: Task["status"]) {
     if (!status && !window.confirm(`「${task.name}」を削除しますか？`)) return;
     setBusy(true);
@@ -285,6 +345,15 @@ export default function TaskBoard({ role, childId }: { role: Role; childId?: str
                     </article>
                   ))}
               </div>
+              {status === "DONE" && nextCursor && (
+                <button
+                  className={secondaryButton}
+                  disabled={busy || refreshing || loadingMore}
+                  onClick={() => void loadMore()}
+                >
+                  {loadingMore ? "読み込み中…" : "もっと見る"}
+                </button>
+              )}
             </section>
           ))}
       </div>
