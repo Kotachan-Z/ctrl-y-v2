@@ -6,16 +6,30 @@ import { findDestructiveStatements, hasDestructiveReview } from "./migration-pol
 
 let needsReview = false;
 try {
-  // Workspace-filtered scripts run from packages/database; git paths are repo-relative.
-  const root = execFileSync("git", ["rev-parse", "--show-toplevel"], { encoding: "utf8" }).trim();
+  // Explicit SQL paths also support checking uncommitted migrations without git.
+  const explicitPaths = process.argv.slice(2);
+  const root = explicitPaths.length
+    ? process.cwd()
+    : execFileSync("git", ["rev-parse", "--show-toplevel"], { encoding: "utf8" }).trim();
   const base = process.env.PR_BASE_REF ? `origin/${process.env.PR_BASE_REF}...HEAD` : "HEAD^..HEAD";
-  const paths = execFileSync(
-    "git",
-    ["diff", "--diff-filter=A", "--name-only", "-z", base, "--", "packages/database/migrations/"],
-    { cwd: root, encoding: "utf8" },
-  ).split("\0");
+  const paths = explicitPaths.length
+    ? explicitPaths
+    : execFileSync(
+        "git",
+        [
+          "diff",
+          "--diff-filter=A",
+          "--name-only",
+          "-z",
+          base,
+          "--",
+          "packages/database/migrations/",
+        ],
+        { cwd: root, encoding: "utf8" },
+      ).split("\0");
   for (const path of paths) {
-    if (!/^packages\/database\/migrations\/[^/]+\.sql$/.test(path)) continue;
+    if (!explicitPaths.length && !/^packages\/database\/migrations\/[^/]+\.sql$/.test(path))
+      continue;
     const sql = await readFile(resolve(root, path), "utf8");
     const matches = findDestructiveStatements(sql);
     if (matches.length && !hasDestructiveReview(sql)) {

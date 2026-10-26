@@ -47,15 +47,17 @@ README から移した各機能の詳細仕様です。
 ## Phase 2d 通知
 
 - `GET /api/push/public-key`: 認証不要、`{ publicKey }`を返します。
-- `PUT /api/parents/push-subscription`: 親のみ、ブラウザの`{ endpoint, keys: { p256dh, auth } }`を保存・上書きします（親ごとに1件）。
-- `DELETE /api/parents/push-subscription`: 親のみ、自分の購読を解除します。
-- 子供のIN_PROGRESS → WAIT_REVIEWへの完了報告で親へ通知。親の差し戻しでは送信しません。
-- 送信はレスポンスを待たせないbest-effort。404/410の無効な購読は従来どおり更新前の購読と一致する場合のみ削除します。一時的な失敗（ネットワーク・5秒タイムアウト・408・429・5xx）のみDBの `push_retry_queue` に保存します。その他のHTTPエラーや暗号化失敗は再送しません。
+- `PUT /api/parents/push-subscription`: 親のみ、ブラウザの`{ endpoint, keys: { p256dh, auth } }`をendpoint単位で保存・更新します。親ごとに最大10件で、超過時は最後に登録・更新した日時（updated_at）が最も古い購読を削除します。同じendpointが別の親に登録済みなら409を返し、付け替えません。
+- `DELETE /api/parents/push-subscription`: 親のみ、body `{ endpoint }` で指定した自分の端末の購読だけを解除します。bodyなしは何も削除せず200を返します。旧クライアントは先にブラウザ購読を解除するため、その端末は送信時の410で自然に削除されます。
+- 子供のIN_PROGRESS → WAIT_REVIEWへの完了報告で親の全購読へ通知。親の差し戻しでは送信しません。
+- 送信はレスポンスを待たせないbest-effort。404/410の無効な購読は従来どおり送信時のID・endpoint・鍵と一致する購読のみ削除します。一時的な失敗（ネットワーク・5秒タイムアウト・408・429・5xx）のみ失敗した購読ごとにDBの `push_retry_queue` に保存します。その他のHTTPエラーや暗号化失敗は再送しません。
 - `VAPID_PUBLIC_KEY`・`VAPID_PRIVATE_KEY`・`VAPID_SUBJECT`（`mailto:`または`https:`の連絡先URI）が必須。不足・形式不正はアプリ初期化時にエラーになります。
   `npx web-push generate-vapid-keys`で鍵を生成し、`apps/api/.env.local`に設定してください。`.env.example`の値は置換必須のプレースホルダーです。Workersでは同名Secretを設定します。
-- 購読UI・PWA・service workerによる表示はPhase 2eで実装済みです。Workersでは `waitUntil` で応答後の通知処理を継続します。再送は本番WorkersのCron Triggerで5分おきに最大25件処理します。初回送信とは別に最大5回、1分→5分→15分→1時間→6時間の間隔で再送予約し、期限後のCronで送信します。成功・購読なし・恒久的失敗・上限到達で行を削除します。毎回最新の購読を参照し、キューにはendpoint・鍵や例外本文を保存しません。
+- 購読UI・PWA・service workerによる表示はPhase 2eで実装済みです。Workersでは `waitUntil` で応答後の通知処理を継続します。再送は本番WorkersのCron Triggerで5分おきに最大25件処理します。初回送信とは別に最大5回、1分→5分→15分→1時間→6時間の間隔で再送予約し、期限後のCronで送信します。成功・購読なし・恒久的失敗・上限到達で行を削除します。毎回参照先購読の最新の鍵を使用し、成功した端末へは再送しません。購読参照は `push_subscriptions.id` へのFK（削除時cascade）です。参照のない旧キュー行は、処理時に親の全購読に対する端末別の行へトランザクション内で展開し、試行回数を引き継ぎます。キューにはendpoint・鍵や例外本文を保存しません。
 - Cronの重複実行は行ロックと10分のリースで抑制し、停止した処理はリース満了後に回収します。送信成功後のDB障害などでは重複通知があり得ます。初回のキュー保存自体が失敗した場合も配信保証はありません。
 - ローカルBun開発サーバー（`apps/api/src/entry.ts`）でもキューへ追加されますが、自動処理はありません。自動再送は本番Workersのみ対応です。本番のキューテーブルはデプロイworkflowでmigrationを自動適用・検証します。
+
+- migrationで旧 `parents.push_subscription` を `push_subscriptions` へコピーします。旧カラムは互換性のため残しますが、新コードは読み書きしません。migration適用からWorker切り替えまでの間に旧コードで登録された購読は新テーブルには入りません。ロールバック時は旧カラムを参照します。旧カラムの削除は後続リリースで行います。
 
 ## Phase 2e PWA
 
@@ -64,7 +66,7 @@ README から移した各機能の詳細仕様です。
 - ページHTMLはnetwork-first、ビルド済み静的アセットはcache-first。訪問・読み込み済みの画面をオフラインでも開けます。認証済みGETの `/api/tasks`、`/api/tasks/:taskId`、`/api/payroll`、`/api/children/:childId/payroll`、`/api/children`、`/api/settings/payroll`、`/api/session` はnetwork-firstで保存し、ネットワークエラー時のみ、同じトークン・URLで直近に取得成功したデータを閲覧できます。未取得のデータは表示できません。キャッシュは認証ヘッダのSHA-256ハッシュで分離し、オフライン表示の注記を出します。
 - 子供の「できた!」による完了報告（`PATCH /api/tasks/:taskId/status`、`IN_PROGRESS → WAIT_REVIEW`）のみ、ネットワークエラー時にlocalStorageへ保存し、「送信待ち」と件数を表示します。ページの `online` イベント、タブが表示状態に戻った時、「一覧を更新」、次回アプリ起動時に、操作時と同じ認証トークンで順次再送し、成功後はタスク一覧を更新します。HTTPエラーは再送せず削除して失敗を通知し、ネットワークエラーは次回の再送契機まで保持します。ログアウト時はそのトークンの未送信操作を破棄し、別トークンの操作は送信しません。旧版で保存された完了報告以外の操作は再送時に破棄します。iOS対応のためBackground Sync APIには依存せず、アプリを閉じたままでは再送しません。ブラウザの保存データを削除するとキャッシュ・未送信操作も失われます。
 - 子供の「はじめる」、親の承認・差し戻し、タスクの新規作成・編集・削除、給与設定変更など、子供の完了報告以外の書き込みは引き続きオフライン非対応です。
-- 親の`/settings/notifications`で通知を有効化・解除できます。許可後にVAPID公開鍵で購読しAPIへ保存、解除時はブラウザとAPI双方の購読を解除します。未対応・許可拒否は画面に表示します。
+- 親の`/settings/notifications`で通知を有効化・解除できます。許可後にVAPID公開鍵で購読しAPIへ保存、解除時は自端末のendpointをAPIに送り、その端末のAPI購読とブラウザ購読を解除します。有効化のPUTが409の場合はブラウザ購読を解除して再購読し、PUTを1回だけ再試行します。親のログアウト時も自端末のDELETEとブラウザ購読の解除をbest-effortで行い、失敗してもログアウトを妨げません。未対応・許可拒否は画面に表示します。
 - pushのタイトル・本文を通知表示し、クリックで既存ウィンドウを開くか`/`へ移動します。HTTPS（ローカルはlocalhost）が必要です。iOSの通知はホーム画面に追加した対応環境で利用します。
 - Playwrightでmanifest・service worker登録・通知設定ページの操作を検証します。購読処理はブラウザAPIをモックし、外部pushサービスには接続しません。
 

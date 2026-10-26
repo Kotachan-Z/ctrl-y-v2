@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 
-import { api } from "../../api";
+import { api, ApiError } from "../../api";
 import { registerServiceWorker, urlBase64ToUint8Array } from "../../push";
 import { primaryButton, neutralButton, cardClass } from "../../styles/shared";
 
@@ -39,26 +39,46 @@ export default function PushNotifications() {
       const registration = await registerServiceWorker();
       const subscription = await registration.pushManager.getSubscription();
       if (enabled) {
-        if (subscription) await subscription.unsubscribe();
-        await api("/parents/push-subscription", { role: "parent", method: "DELETE" });
+        if (subscription) {
+          await api("/parents/push-subscription", {
+            role: "parent",
+            method: "DELETE",
+            body: { endpoint: subscription.endpoint },
+          });
+          await subscription.unsubscribe();
+        }
         setEnabled(false);
         setMessage("通知を無効にしました");
       } else {
         const { publicKey } = await api<{ publicKey: string }>("/push/public-key");
-        const next =
+        let next =
           subscription ??
           (await registration.pushManager.subscribe({
             userVisibleOnly: true,
             applicationServerKey: urlBase64ToUint8Array(publicKey),
           }));
-        try {
-          await api("/parents/push-subscription", {
+        const save = () =>
+          api("/parents/push-subscription", {
             role: "parent",
             method: "PUT",
             body: next.toJSON(),
           });
+        let created = !subscription;
+        try {
+          try {
+            await save();
+          } catch (e) {
+            if (!(e instanceof ApiError) || e.status !== 409) throw e;
+            await next.unsubscribe();
+            next = await registration.pushManager.subscribe({
+              userVisibleOnly: true,
+              applicationServerKey: urlBase64ToUint8Array(publicKey),
+            });
+            created = true;
+            await save();
+          }
         } catch (e) {
-          if (!subscription) await next.unsubscribe();
+          if (created) await next.unsubscribe();
           throw e;
         }
         setEnabled(true);
