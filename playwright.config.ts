@@ -12,7 +12,21 @@ export default defineConfig({
   retries: process.env.CI ? 2 : 0,
   reporter: [["list"], ["html", { open: "never" }]],
   use: { baseURL: "http://127.0.0.1:5173", trace: "retain-on-failure" },
+  projects: [
+    { name: "dev", testIgnore: "production-csp.spec.ts" },
+    {
+      name: "production-csp",
+      testMatch: "production-csp.spec.ts",
+      use: { baseURL: "http://127.0.0.1:4173" },
+    },
+  ],
   webServer: [
+    {
+      command: "bun run --filter @ctrl-y/web build && bun run --filter @ctrl-y/web preview",
+      env: { API_PORT: apiPort },
+      url: "http://127.0.0.1:4173",
+      reuseExistingServer: false,
+    },
     {
       command: "bun run --filter @ctrl-y/web dev",
       env: { API_PORT: apiPort },
