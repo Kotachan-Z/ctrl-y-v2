@@ -73,7 +73,7 @@ test("static assets have a global Cloudflare header rule with a restricted Web C
   expect(csp?.split("; ")).toEqual([
     "default-src 'self'",
     "script-src 'self'",
-    "style-src 'self' 'unsafe-inline'",
+    "style-src 'self'",
     "img-src 'self'",
     "connect-src 'self'",
     "worker-src 'self'",

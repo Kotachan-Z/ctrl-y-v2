@@ -40,6 +40,9 @@ test("production pages and PWA load without CSP violations", async ({ page }) =>
   await page.getByLabel("期限").fill("2027-01-01T18:00");
   await page.getByRole("button", { name: "タスクを作成", exact: true }).click();
   await expect(page.getByRole("article", { name: "CSP確認", exact: true })).toBeVisible();
+  await page.goto("/records");
+  await expect(page.getByRole("heading", { name: "給与記録", exact: true })).toBeVisible();
+  await expect(page.getByRole("cell", { name: "1月", exact: true })).toBeVisible();
   await page.goto("/settings/notifications");
   await expect(page.getByRole("heading", { name: "通知設定", exact: true })).toBeVisible();
   await expect(page.getByRole("button", { name: "通知を有効にする" })).toBeEnabled();

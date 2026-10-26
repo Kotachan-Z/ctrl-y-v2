@@ -83,7 +83,7 @@ README から移した各機能の詳細仕様です。
 
 - Hono アプリ全体（404・エラー応答を含む）と Workers の IP 制限による 429 に、`secureHeaders` で CSP `default-src 'none'; frame-ancestors 'none'` を付与します。
 - Web は `apps/web/public/_headers` をビルド時に dist へコピーして、Cloudflare Static Assets が HTML・SPA フォールバック・JS・CSS・`sw.js` 等に適用します。`run_worker_first` は `/api` と `/api/*` のみなので、静的アセットのヘッダーは Worker 内ではなく `_headers` で設定します。
-- Web の CSP は同一オリジンを基本とし、スクリプト・通信・Worker・manifest は `'self'`、画像も `'self'`。インラインスクリプトは許可しません。Tailwind は外部 CSS にビルドされますが、給与グラフの React style 属性のため style のみ `'unsafe-inline'` を許可します。`frame-ancestors 'none'`、`base-uri 'self'`、`form-action 'self'`、`object-src 'none'` も指定します。
+- Web の CSP は同一オリジンを基本とし、スクリプト・通信・Worker・manifest は `'self'`、画像も `'self'`。インラインスクリプトは許可しません。スタイルも `'self'` のみで、インラインの style 属性は許可しません（Tailwind は外部 CSS にビルドされ、給与グラフの高さは React が CSSOM 経由で設定するため CSP の対象外です）。`frame-ancestors 'none'`、`base-uri 'self'`、`form-action 'self'`、`object-src 'none'` も指定します。
 - Push 購読はブラウザの `pushManager.subscribe()` を利用し、ページから外部 Push サービスへ fetch しないため、`connect-src` に外部ホストは不要です。
 - API・静的アセット共通で `nosniff`、`X-Frame-Options: DENY`、`Referrer-Policy: strict-origin-when-cross-origin` を指定し、Permissions-Policy で camera・microphone・geolocation・payment・usb を禁止します。HTML の既存 referrer meta は、より厳しい `no-referrer` を維持します。
 - HSTS は `max-age=31536000`（includeSubDomains なし）。API は HTTPS リクエストのみ付与し、静的アセットは本番配信の `_headers` で付与します。ローカル Bun HTTP API に HSTS は付けず、Vite dev server に本番 CSP は適用しません。
