@@ -50,13 +50,13 @@ async function totals(month: string, id = childId) {
   return (await response.json()).payroll;
 }
 
-test("recalculation derives UTC month totals, excludes other tasks and is idempotent", async () => {
+test("recalculation derives JST month totals, excludes other tasks and is idempotent", async () => {
   await fixture.db.insert(tasks).values(
     [
-      { completedAt: new Date("2024-02-01T00:00:00Z"), reward: 100 },
-      { completedAt: new Date("2024-02-29T23:59:59.999Z"), reward: 250 },
-      { completedAt: new Date("2024-01-31T23:59:59.999Z"), reward: 1000 },
-      { completedAt: new Date("2024-03-01T00:00:00Z"), reward: 1000 },
+      { completedAt: new Date("2024-01-31T15:00:00Z"), reward: 100 },
+      { completedAt: new Date("2024-02-29T14:59:59.999Z"), reward: 250 },
+      { completedAt: new Date("2024-01-31T14:59:59.999Z"), reward: 1000 },
+      { completedAt: new Date("2024-02-29T15:00:00Z"), reward: 1000 },
       { completedAt: null, reward: 1000 },
     ].map((fields) => ({
       ...fields,
@@ -111,7 +111,7 @@ test("approval, reward edits, reopening across months and deletion recalculate p
     expect((await request(`${path}/status`, "PATCH", child, { status })).status).toBe(200);
   expect((await request(`${path}/status`, "PATCH", parent, { status: "DONE" })).status).toBe(200);
   const stored = await fixture.repository.taskById(parentId, task.id);
-  const month = `${stored!.completedAt!.toISOString().slice(0, 7)}-01`;
+  const month = `${new Date(stored!.completedAt!.getTime() + 9 * 60 * 60 * 1000).toISOString().slice(0, 7)}-01`;
   expect(await totals(month)).toMatchObject([{ completedTaskCount: 1, totalReward: 100 }]);
   expect((await request(`${path}/status`, "PATCH", parent, { status: "DONE" })).status).toBe(409);
   expect((await request(path, "PATCH", parent, { reward: 275 })).status).toBe(200);
@@ -127,7 +127,7 @@ test("approval, reward edits, reopening across months and deletion recalculate p
   // Seed an earlier completion to exercise approval reversal across a month boundary.
   await fixture.db
     .update(tasks)
-    .set({ status: "DONE", completedAt: new Date("2023-12-31T23:59:59Z") })
+    .set({ status: "DONE", completedAt: new Date("2023-12-31T14:59:59Z") })
     .where(eq(tasks.id, task.id));
   await fixture.repository.recalculatePayroll(childId, "2023-12-01");
   expect((await request(`${path}/status`, "PATCH", parent, { status: "WAIT_REVIEW" })).status).toBe(
@@ -176,4 +176,94 @@ test("payroll reads filter, order and enforce parent ownership and child identit
   expect((await request("/children/bad/payroll")).status).toBe(400);
   expect((await request(`/children/${crypto.randomUUID()}/payroll`)).status).toBe(404);
   expect(await totals("2020-01-01")).toEqual([]);
+});
+
+test("cutoff changes rebuild all siblings and preserve empty months, independently of pay day", async () => {
+  for (const id of [childId, siblingId]) {
+    await fixture.db.insert(tasks).values([
+      {
+        parentId,
+        childId: id,
+        deadline,
+        name: "15日末",
+        status: "DONE",
+        completedAt: new Date("2022-12-15T14:59:59.999Z"),
+        reward: 10,
+      },
+      {
+        parentId,
+        childId: id,
+        deadline,
+        name: "16日開始",
+        status: "DONE",
+        completedAt: new Date("2022-12-15T15:00:00Z"),
+        reward: 20,
+      },
+      {
+        parentId,
+        childId: id,
+        deadline,
+        name: "年越し",
+        status: "DONE",
+        completedAt: new Date("2022-12-31T15:00:00Z"),
+        reward: 30,
+      },
+    ]);
+    await fixture.repository.recalculatePayroll(id, "2022-12-01");
+  }
+  await fixture.repository.updatePayrollSettings(parentId, { cutoffDay: true });
+  for (const id of [childId, siblingId]) {
+    expect(await totals("2022-12-01", id)).toMatchObject([
+      { completedTaskCount: 1, totalReward: 10 },
+    ]);
+    expect(await totals("2023-01-01", id)).toMatchObject([
+      { completedTaskCount: 2, totalReward: 50 },
+    ]);
+  }
+  const before = await fixture.repository.listPayroll(parentId);
+  await fixture.repository.updatePayrollSettings(parentId, { payDay: true });
+  expect(await fixture.repository.listPayroll(parentId)).toEqual(before);
+  const [task] = (await fixture.repository.listTasks(parentId, "DONE", childId)).filter(
+    (t) => t.name === "16日開始",
+  );
+  await fixture.repository.editTask(parentId, task.id, { reward: 25 });
+  expect(await totals("2023-01-01")).toMatchObject([{ totalReward: 55 }]);
+  await fixture.repository.transitionTask(parentId, task.id, "WAIT_REVIEW");
+  expect(await totals("2023-01-01")).toMatchObject([{ totalReward: 30 }]);
+  const [last] = (await fixture.repository.listTasks(parentId, "DONE", childId)).filter(
+    (t) => t.name === "年越し",
+  );
+  await fixture.repository.deleteTask(parentId, last.id);
+  expect(await totals("2023-01-01")).toMatchObject([{ completedTaskCount: 0, totalReward: 0 }]);
+  await fixture.repository.updatePayrollSettings(parentId, { cutoffDay: false });
+  expect(await totals("2023-01-01")).toMatchObject([{ completedTaskCount: 0, totalReward: 0 }]);
+  expect(await totals("2022-12-01", siblingId)).toMatchObject([
+    { completedTaskCount: 2, totalReward: 30 },
+  ]);
+});
+
+test("serially executed cutoff changes and task mutations leave totals consistent", async () => {
+  const [task] = await fixture.db
+    .insert(tasks)
+    .values({
+      parentId,
+      childId,
+      deadline,
+      name: "競合",
+      status: "DONE",
+      completedAt: new Date("2020-12-15T15:00:00Z"),
+      reward: 100,
+    })
+    .returning();
+  // PGLite uses one connection and serializes these transactions; this does not test lock contention.
+  await Promise.all([
+    fixture.repository.updatePayrollSettings(parentId, { cutoffDay: true }),
+    fixture.repository.editTask(parentId, task.id, { reward: 200 }),
+  ]);
+  expect(await totals("2021-01-01")).toMatchObject([{ completedTaskCount: 1, totalReward: 200 }]);
+  await Promise.all([
+    fixture.repository.deleteTask(parentId, task.id),
+    fixture.repository.updatePayrollSettings(parentId, { cutoffDay: false }),
+  ]);
+  expect(await totals("2021-01-01")).toMatchObject([{ completedTaskCount: 0, totalReward: 0 }]);
 });

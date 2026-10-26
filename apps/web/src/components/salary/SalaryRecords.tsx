@@ -18,6 +18,7 @@ export default function SalaryRecords() {
   const [childrenLoaded, setChildrenLoaded] = useState(false);
   const [selectedChild, setSelectedChild] = useState("");
   const [rows, setRows] = useState<PayrollRow[]>([]);
+  const [payDay, setPayDay] = useState<boolean | null>(null);
   const [loaded, setLoaded] = useState(false);
   const [message, setMessage] = useState("");
   const [selectedYear, setSelectedYear] = useState(new Date().getFullYear());
@@ -44,10 +45,16 @@ export default function SalaryRecords() {
     let active = true;
     setLoaded(false);
     setMessage("");
-    api<{ payroll: PayrollRow[] }>(`/children/${selectedChild}/payroll`, { role: "parent" })
-      .then((result) => {
+    Promise.all([
+      api<{ payroll: PayrollRow[] }>(`/children/${selectedChild}/payroll`, { role: "parent" }),
+      api<{ settings: { payDay: boolean } }>("/settings/payroll", { role: "parent" }).catch(
+        () => null,
+      ),
+    ])
+      .then(([result, settings]) => {
         if (active) {
           setRows(result.payroll);
+          setPayDay(settings?.settings.payDay ?? null);
           setLoaded(true);
         }
       })
@@ -157,6 +164,7 @@ export default function SalaryRecords() {
                       <th className="py-2">月</th>
                       <th className="py-2">完了件数</th>
                       <th className="py-2">報酬合計</th>
+                      <th className="py-2">支給日</th>
                     </tr>
                   </thead>
                   <tbody>
@@ -165,6 +173,11 @@ export default function SalaryRecords() {
                         <td className="py-2">{m.month}月</td>
                         <td className="py-2">{m.count}件</td>
                         <td className="py-2 font-semibold text-green-600">{m.reward}円</td>
+                        <td className="py-2">
+                          {payDay === null
+                            ? "—"
+                            : `${selectedYear}年${m.month}月${payDay ? 15 : new Date(Date.UTC(selectedYear, m.month, 0)).getUTCDate()}日`}
+                        </td>
                       </tr>
                     ))}
                   </tbody>

@@ -210,6 +210,12 @@ test.each([
   const env = { ...bindings(), AUTH_RATE_LIMITER: { limit } };
   const response = await worker.fetch(authRequest(path), env, context().ctx);
   expect(response.status).toBe(429);
+  expect(response.headers.get("Content-Security-Policy")).toBe(
+    "default-src 'none'; frame-ancestors 'none'",
+  );
+  expect(response.headers.get("X-Content-Type-Options")).toBe("nosniff");
+  expect(response.headers.get("X-Frame-Options")).toBe("DENY");
+  expect(response.headers.get("Strict-Transport-Security")).toBe("max-age=31536000");
   expect(response.headers.get("Retry-After")).toBe("60");
   expect(response.headers.get("Cache-Control")).toBe("no-store");
   expect(limit).toHaveBeenCalledExactlyOnceWith({ key: clientIp });
@@ -217,6 +223,33 @@ test.each([
   expect(mocks.database).not.toHaveBeenCalled();
   expect(mocks.repository).not.toHaveBeenCalled();
   expect(mocks.handle).not.toHaveBeenCalled();
+});
+
+test("reused rejection app keeps HTTPS and HTTP response headers separate", async () => {
+  const { default: worker } = await import("../src/worker.js");
+  const env = {
+    ...bindings(),
+    AUTH_RATE_LIMITER: { limit: vi.fn<RateLimit["limit"]>().mockResolvedValue({ success: false }) },
+  };
+  for (const protocol of ["https", "http", "https"]) {
+    const response = await worker.fetch(
+      new Request(`${protocol}://example.test/api/parents/login`, {
+        method: "POST",
+        headers: { "CF-Connecting-IP": clientIp },
+      }),
+      env,
+      context().ctx,
+    );
+    expect(response.status).toBe(429);
+    expect(response.headers.get("Retry-After")).toBe("60");
+    expect(response.headers.get("Strict-Transport-Security")).toBe(
+      protocol === "https" ? "max-age=31536000" : null,
+    );
+    expect(await response.json()).toEqual({
+      error: "試行回数が多すぎます。60秒後に再試行してください",
+    });
+  }
+  expect(mocks.database).not.toHaveBeenCalled();
 });
 
 test.each(["binding", "IP"])("missing %s skips the IP limiter", async (missing) => {

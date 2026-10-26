@@ -10,7 +10,7 @@ await test("push migration copies legacy subscriptions, preserves old columns an
   try {
     const migrations = await readMigrations();
     const index = migrations.findIndex(
-      (migration) => migration.tag === "20261026024623_left_marauders",
+      (migration) => migration.tag === "20261026052217_multi_device_push",
     );
     assert.ok(index > 0);
     for (const migration of migrations.slice(0, index)) await client.exec(migration.sql);

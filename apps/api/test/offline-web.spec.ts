@@ -412,6 +412,10 @@ describe("service worker API cache", () => {
   }
   it.each([
     "/api/tasks",
+    "/api/tasks?status=TODO",
+    "/api/tasks?status=TODO,IN_PROGRESS,WAIT_REVIEW",
+    "/api/tasks?status=DONE&limit=20",
+    "/api/tasks?status=DONE&limit=20&cursor=opaque-page",
     "/api/tasks/id",
     "/api/payroll",
     "/api/children/id/payroll",
