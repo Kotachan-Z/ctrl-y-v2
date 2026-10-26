@@ -31,7 +31,10 @@ export function registerTaskRoutes(app: Hono<AuthEnv>, deps: RouteDeps): void {
     const status = c.req.query("status");
     const childId = c.req.query("childId");
     const statuses = status?.split(",");
-    if (statuses !== undefined && !statuses.every(taskStatus))
+    if (
+      statuses !== undefined &&
+      (!statuses.every(taskStatus) || new Set(statuses).size !== statuses.length)
+    )
       throw new HTTPException(400, { message: "ステータスが不正です" });
     if (childId !== undefined && childId !== "null" && !isUuid(childId))
       throw new HTTPException(400, { message: "担当者が不正です" });

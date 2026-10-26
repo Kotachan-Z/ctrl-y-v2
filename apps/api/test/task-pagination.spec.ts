@@ -103,7 +103,7 @@ test("combined active statuses validate filters and keyset pages handle status c
       .set({ status: "IN_PROGRESS" })
       .where(eq(tasks.id, inserted[0].id));
     expect(await ids()).toHaveLength(3);
-    for (const status of ["TODO,", ",DONE", "TODO,invalid", ""])
+    for (const status of ["TODO,", ",DONE", "TODO,invalid", "", "DONE,DONE"])
       expect((await request(`status=${status}`)).status).toBe(400);
     const first = await (await request("status=DONE&limit=1")).json();
     expect(first.tasks[0].id).toBe(inserted[5].id);

@@ -73,7 +73,7 @@ test("parent creates and edits; child starts and submits; parent approves and de
       await last.getByRole("button", { name: "編集" }).click();
       await last.getByLabel("メモ").fill("入力途中");
       const refreshed = page.waitForResponse((response) =>
-        response.url().includes("status=DONE&limit=21"),
+        response.url().includes("status=DONE&limit=20&cursor="),
       );
       await page.evaluate(() => window.dispatchEvent(new Event("ctrl-y-synced")));
       await refreshed;

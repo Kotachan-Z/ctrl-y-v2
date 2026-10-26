@@ -86,7 +86,8 @@ export default function TaskBoard({ role, childId }: { role: Role; childId?: str
       const count = doneCount.current;
       do {
         const page: { tasks: Task[]; nextCursor: string | null } = await api(
-          `/tasks?status=DONE&limit=${Math.min(100, count - restored.length)}${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ""}`,
+          // Same page size as loadMore, so offline reloads hit the cached page URLs.
+          `/tasks?status=DONE&limit=20${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ""}`,
           { role },
         );
         if (!active) return { tasks: [], nextCursor: null };
