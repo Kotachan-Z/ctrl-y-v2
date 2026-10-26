@@ -34,6 +34,14 @@ README から移した各機能の詳細仕様です。
   Phase 2bのタスク更新処理で実装済みです。給与のmonthは対象月1日のDATEです。
 - Playwrightは `.pglite/e2e` にmigrationを適用し、テスト専用JWT_SECRETで起動します。
 
+## タスク一覧のページング
+
+- `GET /api/tasks` は従来の `status`・`childId` フィルターに対応し（`status` はカンマ区切りで複数指定可能）、`limit` なしでは全件を `createdAt, id` 昇順で返します（レスポンスは従来の `{ tasks }`）。
+- `limit` は1〜100の整数。指定時は `{ tasks, nextCursor }` を返し、続きがなければ `nextCursor` は null です。次ページでは同じフィルターと `limit` に加えて、不透明な `cursor` を指定します。カーソルは署名付きで家族・フィルターにひも付き、不正値や `limit` のないカーソル指定は400です。
+- ページング時は通常 `createdAt, id` 昇順、`status=DONE` のみ `completedAt, id` 降順です。完了日時がない既存行は作成日時を使います。keyset方式で、読み込み中の更新を固定するスナップショットではありません。
+- 親・子供とも未完了の3状態は1リクエストで全件、完了は最新20件を表示し、「もっと見る」で20件ずつ追加します。状態変更・編集・削除・追加・送信待ちの同期・「一覧を更新」では読み込み済みの完了件数（最低20件）を先頭から取り直します。1回の取得上限は100件で、必要に応じて後続ページを取得します。再読み込み開始前の「もっと見る」の応答は破棄します。
+- オフラインではクエリ付きURLごとの取得済みページを表示します。未取得の続きは取得できず、エラー表示後も既存の一覧を保持します。
+
 ## Phase 2c 給与集計
 
 - タスクの報酬は0〜1,000,000円の整数です。APIとDBのCHECK制約で範囲を検証します。
@@ -82,3 +90,15 @@ README から移した各機能の詳細仕様です。
 - 本番はResendで送信ドメインを検証し、送信権限を持つAPIキーを作成してください。`bunx wrangler secret put RESEND_API_KEY` と `bunx wrangler secret put RESEND_FROM_EMAIL` でキー・送信元（例 `Ctrl-Y <noreply@example.com>`）を設定し、`WEB_ORIGIN` に公開WebのHTTPSオリジンを設定します。同名の値を `.dev.vars` に設定すればWorkersローカル検証にも使えます。本番では未設定でもリンクをログ出力しません。
 - [Resend HTTP API](https://resend.com/docs/api-reference/emails/send-email)へ送信します。10秒でタイムアウトし、失敗は秘密値を含めずログに記録します。Workersでは`waitUntil`で配信処理を継続し、ローカルBunでも配信完了を待たずに応答します。永続キューや自動再送はありません。
 - 追加migrationは、本番ではデプロイworkflowが自動適用・検証します。ローカルでは `bun run --filter @ctrl-y/database migration` を実行してください。
+
+## セキュリティヘッダー
+
+- Hono アプリ全体（404・エラー応答を含む）と Workers の IP 制限による 429 に、`secureHeaders` で CSP `default-src 'none'; frame-ancestors 'none'` を付与します。
+- Web は `apps/web/public/_headers` をビルド時に dist へコピーして、Cloudflare Static Assets が HTML・SPA フォールバック・JS・CSS・`sw.js` 等に適用します。`run_worker_first` は `/api` と `/api/*` のみなので、静的アセットのヘッダーは Worker 内ではなく `_headers` で設定します。
+- Web の CSP は同一オリジンを基本とし、スクリプト・通信・Worker・manifest は `'self'`、画像も `'self'`。インラインスクリプトは許可しません。スタイルも `'self'` のみで、インラインの style 属性は許可しません（Tailwind は外部 CSS にビルドされ、給与グラフの高さは React が CSSOM 経由で設定するため CSP の対象外です）。`frame-ancestors 'none'`、`base-uri 'self'`、`form-action 'self'`、`object-src 'none'` も指定します。
+- Push 購読はブラウザの `pushManager.subscribe()` を利用し、ページから外部 Push サービスへ fetch しないため、`connect-src` に外部ホストは不要です。
+- API・静的アセット共通で `nosniff`、`X-Frame-Options: DENY`、`Referrer-Policy: strict-origin-when-cross-origin` を指定し、Permissions-Policy で camera・microphone・geolocation・payment・usb を禁止します。HTML の既存 referrer meta は、より厳しい `no-referrer` を維持します。
+- HSTS は `max-age=31536000`（includeSubDomains なし）。API は HTTPS リクエストのみ付与し、静的アセットは本番配信の `_headers` で付与します。ローカル Bun HTTP API に HSTS は付けず、Vite dev server に本番 CSP は適用しません。
+
+- API・静的アセット共通で COOP・CORP は `same-origin`、Origin-Agent-Cluster は `?1`、X-DNS-Prefetch-Control は `off`、X-Download-Options は `noopen`、X-Permitted-Cross-Domain-Policies は `none`、X-XSS-Protection は `0` とします。IP 制限の拒否応答用 Hono アプリはモジュール単位で再利用します。
+- `bun run test:e2e` は既存の Vite dev（5173）に加え、ビルド済み dist を `_headers` の全体ルール付きで Vite preview（4173）から配信します。専用 Playwright プロジェクトでログイン・タスク一覧・通知設定と Service Worker 登録を確認し、CSP 違反がないことを CI でも検証します。

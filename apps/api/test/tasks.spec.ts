@@ -243,3 +243,71 @@ test("deadline milliseconds survive Drizzle and API creation and edits", async (
     }
   }
 });
+
+test("keyset pages preserve legacy order and validate signed family/filter cursors", async () => {
+  const inserted = await fixture.db
+    .insert(tasks)
+    .values(
+      Array.from({ length: 4 }, (_, i) => ({
+        ...fields,
+        deadline: new Date(fields.deadline),
+        parentId,
+        childId: siblingId,
+        status: "DONE" as const,
+        createdAt: new Date("2028-01-01T00:00:00Z"),
+        completedAt: new Date(`2028-01-0${Math.floor(i / 2) + 1}T00:00:00Z`),
+      })),
+    )
+    .returning();
+  const base = `?status=DONE&childId=${siblingId}`;
+  // Isolate the fixture from tasks created by previous tests.
+  const legacy = await (await request(base)).json();
+  const expected = legacy.tasks.toSorted(
+    (a: { completedAt: string; id: string }, b: { completedAt: string; id: string }) =>
+      b.completedAt.localeCompare(a.completedAt) || b.id.localeCompare(a.id),
+  );
+  const first = await (await request(`${base}&limit=2`)).json();
+  expect(first.tasks).toEqual(expected.slice(0, 2));
+  expect(first.nextCursor).toEqual(expect.any(String));
+  const rest = await (
+    await request(`${base}&limit=100&cursor=${first.nextCursor}`, "GET", child)
+  ).json();
+  expect([...first.tasks, ...rest.tasks]).toEqual(expected);
+  expect(rest.nextCursor).toBeNull();
+  const exact = await (await request(`${base}&limit=${expected.length}`)).json();
+  expect(exact.tasks).toEqual(expected);
+  expect(exact.nextCursor).toBeNull();
+  expect(legacy).not.toHaveProperty("nextCursor");
+  for (const path of [
+    `${base}&limit=2&cursor=${first.nextCursor.slice(0, -8)}tampered`,
+    `${base}&cursor=${first.nextCursor}`,
+    `?status=TODO&childId=${siblingId}&limit=2&cursor=${first.nextCursor}`,
+    `?status=DONE&limit=2&cursor=${first.nextCursor}`,
+  ])
+    expect((await request(path)).status).toBe(400);
+  expect((await request(`${base}&limit=2&cursor=${first.nextCursor}`, "GET", other)).status).toBe(
+    400,
+  );
+  for (const id of inserted.map((task) => task.id))
+    await fixture.db.delete(tasks).where(eq(tasks.id, id));
+});
+
+test("pagination validates limits and cursors and walks ascending pages without duplicates", async () => {
+  for (const limit of ["0", "101", "-1", "1.5", "", "abc", "1e2", "Infinity"])
+    expect((await request(`?limit=${limit}`)).status).toBe(400);
+  for (const cursor of ["", "invalid", "a.b.c"])
+    expect((await request(`?limit=1&cursor=${cursor}`)).status).toBe(400);
+  const legacy = await (await request("")).json();
+  const ids: string[] = [];
+  let cursor: string | null = null;
+  do {
+    const page = await (await request(`?limit=1${cursor ? `&cursor=${cursor}` : ""}`)).json();
+    ids.push(...page.tasks.map((task: { id: string }) => task.id));
+    cursor = page.nextCursor;
+  } while (cursor && ids.length <= legacy.tasks.length);
+  expect(ids).toEqual(legacy.tasks.map((task: { id: string }) => task.id));
+  expect(await (await request("?limit=100", "GET", other)).json()).toEqual({
+    tasks: [],
+    nextCursor: null,
+  });
+});
