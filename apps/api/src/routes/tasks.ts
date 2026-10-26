@@ -1,5 +1,6 @@
 import type { Hono } from "hono";
 import { HTTPException } from "hono/http-exception";
+import { sign, verify } from "hono/jwt";
 
 import type { AuthEnv } from "../auth.js";
 import { familyId, isUuid, parentOnly } from "../auth.js";
@@ -29,14 +30,70 @@ export function registerTaskRoutes(app: Hono<AuthEnv>, deps: RouteDeps): void {
   app.get("/api/tasks", auth, async (c) => {
     const status = c.req.query("status");
     const childId = c.req.query("childId");
-    if (status !== undefined && !taskStatus(status))
+    const statuses = status?.split(",");
+    if (
+      statuses !== undefined &&
+      (!statuses.every(taskStatus) || new Set(statuses).size !== statuses.length)
+    )
       throw new HTTPException(400, { message: "ステータスが不正です" });
     if (childId !== undefined && childId !== "null" && !isUuid(childId))
       throw new HTTPException(400, { message: "担当者が不正です" });
+    const limit = c.req.query("limit");
+    const cursor = c.req.query("cursor");
+    const parentId = familyId(c.get("identity"));
+    const assigned = childId === "null" ? null : childId;
+    if (limit !== undefined && (!/^[1-9]\d*$/.test(limit) || Number(limit) > 100))
+      throw new HTTPException(400, { message: "取得件数は1〜100の整数で指定してください" });
+    let position: { time: string; id: string } | undefined;
+    if (cursor !== undefined) {
+      try {
+        if (limit === undefined || cursor.length > 2048) throw new Error();
+        const payload = await verify(cursor, deps.jwtSecret, "HS256");
+        if (
+          payload.purpose !== "task-page" ||
+          payload.parentId !== parentId ||
+          payload.status !== (status ?? null) ||
+          payload.childId !== (assigned === undefined ? "all" : assigned) ||
+          typeof payload.time !== "string" ||
+          !Number.isFinite(Date.parse(payload.time)) ||
+          typeof payload.id !== "string" ||
+          !isUuid(payload.id)
+        )
+          throw new Error();
+        position = { time: payload.time, id: payload.id };
+      } catch {
+        throw new HTTPException(400, { message: "カーソルが不正です" });
+      }
+    }
+    if (limit !== undefined) {
+      const page = await repo().listTasksPage(
+        parentId,
+        statuses,
+        assigned,
+        Number(limit),
+        position,
+      );
+      return c.json({
+        tasks: page.tasks,
+        nextCursor: page.next
+          ? await sign(
+              {
+                purpose: "task-page",
+                parentId,
+                status: status ?? null,
+                childId: assigned === undefined ? "all" : assigned,
+                ...page.next,
+              },
+              deps.jwtSecret,
+              "HS256",
+            )
+          : null,
+      });
+    }
     return c.json({
       tasks: await repo().listTasks(
         familyId(c.get("identity")),
-        status,
+        statuses,
         childId === "null" ? null : childId,
       ),
     });
