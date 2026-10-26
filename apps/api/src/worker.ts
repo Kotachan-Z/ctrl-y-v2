@@ -1,8 +1,10 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 
 import { createProductionDatabase } from "@ctrl-y/database/production";
+import { Hono } from "hono";
 import { getPath } from "hono/utils/url";
 
+import { apiSecurityHeaders } from "./middleware/security-headers.js";
 import { processPushRetries, validateVapidConfig } from "./push.js";
 import { createFailureLimiter } from "./rate-limit.js";
 import { createRepository, type AuthRepository } from "./repository.js";
@@ -24,6 +26,14 @@ export interface Env {
 // Keep counters for the lifetime of this isolate, across per-request apps.
 const failureLimiter = createFailureLimiter();
 const resetLimit = createFailureLimiter(true);
+
+const rejection = new Hono();
+rejection.use("*", apiSecurityHeaders);
+rejection.all("*", (c) => {
+  c.header("Retry-After", "60");
+  c.header("Cache-Control", "no-store");
+  return c.json({ error: "試行回数が多すぎます。60秒後に再試行してください" }, 429);
+});
 
 const requests = new AsyncLocalStorage<{
   repository: AuthRepository;
@@ -66,10 +76,7 @@ export default {
     if (isAuthRequest && env.AUTH_RATE_LIMITER && ip) {
       const { success } = await env.AUTH_RATE_LIMITER.limit({ key: ip });
       if (!success) {
-        return Response.json(
-          { error: "試行回数が多すぎます。60秒後に再試行してください" },
-          { status: 429, headers: { "Retry-After": "60", "Cache-Control": "no-store" } },
-        );
+        return rejection.fetch(request);
       }
     }
 

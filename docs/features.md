@@ -78,3 +78,15 @@ README から移した各機能の詳細仕様です。
 - 本番はResendで送信ドメインを検証し、送信権限を持つAPIキーを作成してください。`bunx wrangler secret put RESEND_API_KEY` と `bunx wrangler secret put RESEND_FROM_EMAIL` でキー・送信元（例 `Ctrl-Y <noreply@example.com>`）を設定し、`WEB_ORIGIN` に公開WebのHTTPSオリジンを設定します。同名の値を `.dev.vars` に設定すればWorkersローカル検証にも使えます。本番では未設定でもリンクをログ出力しません。
 - [Resend HTTP API](https://resend.com/docs/api-reference/emails/send-email)へ送信します。10秒でタイムアウトし、失敗は秘密値を含めずログに記録します。Workersでは`waitUntil`で配信処理を継続し、ローカルBunでも配信完了を待たずに応答します。永続キューや自動再送はありません。
 - 追加migrationは、本番ではデプロイworkflowが自動適用・検証します。ローカルでは `bun run --filter @ctrl-y/database migration` を実行してください。
+
+## セキュリティヘッダー
+
+- Hono アプリ全体（404・エラー応答を含む）と Workers の IP 制限による 429 に、`secureHeaders` で CSP `default-src 'none'; frame-ancestors 'none'` を付与します。
+- Web は `apps/web/public/_headers` をビルド時に dist へコピーして、Cloudflare Static Assets が HTML・SPA フォールバック・JS・CSS・`sw.js` 等に適用します。`run_worker_first` は `/api` と `/api/*` のみなので、静的アセットのヘッダーは Worker 内ではなく `_headers` で設定します。
+- Web の CSP は同一オリジンを基本とし、スクリプト・通信・Worker・manifest は `'self'`、画像も `'self'`。インラインスクリプトは許可しません。Tailwind は外部 CSS にビルドされますが、給与グラフの React style 属性のため style のみ `'unsafe-inline'` を許可します。`frame-ancestors 'none'`、`base-uri 'self'`、`form-action 'self'`、`object-src 'none'` も指定します。
+- Push 購読はブラウザの `pushManager.subscribe()` を利用し、ページから外部 Push サービスへ fetch しないため、`connect-src` に外部ホストは不要です。
+- API・静的アセット共通で `nosniff`、`X-Frame-Options: DENY`、`Referrer-Policy: strict-origin-when-cross-origin` を指定し、Permissions-Policy で camera・microphone・geolocation・payment・usb を禁止します。HTML の既存 referrer meta は、より厳しい `no-referrer` を維持します。
+- HSTS は `max-age=31536000`（includeSubDomains なし）。API は HTTPS リクエストのみ付与し、静的アセットは本番配信の `_headers` で付与します。ローカル Bun HTTP API に HSTS は付けず、Vite dev server に本番 CSP は適用しません。
+
+- API・静的アセット共通で COOP・CORP は `same-origin`、Origin-Agent-Cluster は `?1`、X-DNS-Prefetch-Control は `off`、X-Download-Options は `noopen`、X-Permitted-Cross-Domain-Policies は `none`、X-XSS-Protection は `0` とします。IP 制限の拒否応答用 Hono アプリはモジュール単位で再利用します。
+- `bun run test:e2e` は既存の Vite dev（5173）に加え、ビルド済み dist を `_headers` の全体ルール付きで Vite preview（4173）から配信します。専用 Playwright プロジェクトでログイン・タスク一覧・通知設定と Service Worker 登録を確認し、CSP 違反がないことを CI でも検証します。

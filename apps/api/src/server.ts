@@ -3,6 +3,7 @@ import { bodyLimit } from "hono/body-limit";
 
 import { authenticate, type AuthEnv } from "./auth.js";
 import { errorHandler } from "./middleware/error-handler.js";
+import { apiSecurityHeaders } from "./middleware/security-headers.js";
 import type { ResetMailConfig } from "./password-reset.js";
 import { readVapidConfig, validateVapidConfig, type VapidConfig } from "./push.js";
 import { createFailureLimiter } from "./rate-limit.js";
@@ -35,6 +36,7 @@ export function createApp(options: {
   const limit = options.failureLimiter ?? createFailureLimiter();
   const resetLimit = options.resetLimit ?? createFailureLimiter(true);
   app.onError(errorHandler);
+  app.use("*", apiSecurityHeaders);
   app.use(
     "/api/*",
     bodyLimit({ maxSize: 16 * 1024, onError: (c) => c.json({ error: "入力が大きすぎます" }, 413) }),
