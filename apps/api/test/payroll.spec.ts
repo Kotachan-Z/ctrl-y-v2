@@ -3,6 +3,7 @@ import { eq } from "drizzle-orm";
 import { afterAll, beforeAll, expect, test } from "vitest";
 
 import { issueToken } from "../src/auth.js";
+import { payrollMonth } from "../src/repositories/payroll.js";
 import { secret, testApp } from "./helpers.js";
 
 let fixture: Awaited<ReturnType<typeof testApp>>;
@@ -266,4 +267,54 @@ test("serially executed cutoff changes and task mutations leave totals consisten
     fixture.repository.updatePayrollSettings(parentId, { cutoffDay: false }),
   ]);
   expect(await totals("2021-01-01")).toMatchObject([{ completedTaskCount: 0, totalReward: 0 }]);
+});
+
+test("cutoff rebuild matches payrollMonth for every task and leaves other families alone", async () => {
+  const [p] = await fixture.db
+    .insert(parents)
+    .values({ email: "payroll-rebuild@example.test", passwordHash: "unused" })
+    .returning();
+  const [kid] = await fixture.db.insert(children).values({ parentId: p.id, name: "D" }).returning();
+  const instants = [
+    "2024-02-15T14:59:59.999Z",
+    "2024-02-15T15:00:00Z",
+    "2024-02-28T15:00:00Z",
+    "2024-02-29T14:59:59.999Z",
+    "2024-02-29T15:00:00Z",
+    "2024-12-15T15:00:00Z",
+    "2024-12-31T14:59:59.999Z",
+    "2024-12-31T15:00:00Z",
+  ].map((value) => new Date(value)); // Chronological, so expected months stay sorted.
+  await fixture.db.insert(tasks).values(
+    instants.map((completedAt, i) => ({
+      parentId: p.id,
+      childId: kid.id,
+      deadline,
+      name: `境界${i}`,
+      status: "DONE" as const,
+      completedAt,
+      reward: 10 ** (i % 4),
+    })),
+  );
+  const others = await fixture.repository.listPayroll(parentId);
+  for (const cutoffDay of [true, false]) {
+    await fixture.repository.updatePayrollSettings(p.id, { cutoffDay });
+    const expected = new Map<string, { completedTaskCount: number; totalReward: number }>();
+    instants.forEach((completedAt, i) => {
+      const month = payrollMonth(completedAt, cutoffDay);
+      const row = expected.get(month) ?? { completedTaskCount: 0, totalReward: 0 };
+      row.completedTaskCount += 1;
+      row.totalReward += 10 ** (i % 4);
+      expected.set(month, row);
+    });
+    const rows = await fixture.repository.listPayroll(p.id);
+    for (const row of rows)
+      expect({ completedTaskCount: row.completedTaskCount, totalReward: row.totalReward }).toEqual(
+        expected.get(row.month) ?? { completedTaskCount: 0, totalReward: 0 },
+      );
+    expect(rows.filter((row) => row.completedTaskCount > 0).map((row) => row.month)).toEqual([
+      ...expected.keys(),
+    ]);
+  }
+  expect(await fixture.repository.listPayroll(parentId)).toEqual(others);
 });

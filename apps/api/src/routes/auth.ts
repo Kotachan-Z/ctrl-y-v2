@@ -6,14 +6,15 @@ import { hashRefreshToken, newRefreshToken, issueToken } from "../auth.js";
 import { body } from "../lib/request.js";
 import type { RouteDeps } from "./types.js";
 
+async function refreshHash(request: Request) {
+  const { refreshToken } = await body(request);
+  if (typeof refreshToken !== "string" || !refreshToken.length || refreshToken.length > 1024)
+    throw new HTTPException(400, { message: "refresh tokenを確認してください" });
+  return hashRefreshToken(refreshToken);
+}
+
 export function registerAuthRoutes(app: Hono<AuthEnv>, deps: RouteDeps): void {
   const { repo, limit, jwtSecret } = deps;
-  const refreshHash = async (request: Request) => {
-    const { refreshToken } = await body(request);
-    if (typeof refreshToken !== "string" || !refreshToken.length || refreshToken.length > 1024)
-      throw new HTTPException(400, { message: "refresh tokenを確認してください" });
-    return hashRefreshToken(refreshToken);
-  };
   app.post("/api/auth/refresh", async (c) => {
     const tokenHash = await refreshHash(c.req.raw);
     return limit(`refresh:${tokenHash}`, async () => {

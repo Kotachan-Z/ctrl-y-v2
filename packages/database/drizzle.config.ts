@@ -1,10 +1,13 @@
 import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
-import { fileURLToPath } from "node:url";
 
 import { defineConfig } from "drizzle-kit";
-const databasePath =
-  process.env.PGLITE_PATH ?? fileURLToPath(new URL("../../.pglite/database", import.meta.url));
+
+import { assertCompatibleDataDir, defaultDatabasePath } from "./src/pglite-path";
+const databasePath = process.env.PGLITE_PATH ?? defaultDatabasePath;
+// Only these commands open the database; generate, check, up and drop work on files alone.
+if (["migrate", "push", "studio", "pull", "introspect"].some((c) => process.argv.includes(c)))
+  assertCompatibleDataDir(databasePath);
 mkdirSync(dirname(databasePath), { recursive: true });
 export default defineConfig({
   casing: "snake_case",
