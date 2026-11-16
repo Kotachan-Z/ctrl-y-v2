@@ -11,11 +11,14 @@ export const defaultDatabasePath = fileURLToPath(
 
 // Fail with recovery steps instead of PGlite's opaque initialization error.
 export function assertCompatibleDataDir(path: string) {
-  // PGlite opens `file://` paths and plain paths from disk; other schemes are not directories.
-  const directory = path.startsWith("file://")
-    ? path.slice("file://".length)
-    : path.includes("://")
-      ? undefined
+  // Mirrors PGlite's parseDataDir: these schemes are not on disk, `file://` is stripped, and
+  // every other value is a filesystem path.
+  const directory = ["memory://", "idb://", "opfs-ahp://", "memfs2opfs://"].some((scheme) =>
+    path.startsWith(scheme),
+  )
+    ? undefined
+    : path.startsWith("file://")
+      ? path.slice("file://".length)
       : path;
   if (!directory) return;
   const versionFile = join(directory, "PG_VERSION");
