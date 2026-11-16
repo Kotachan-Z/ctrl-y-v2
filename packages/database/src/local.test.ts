@@ -5,12 +5,17 @@ import { join } from "node:path";
 import { test } from "node:test";
 
 import { createLocalDatabase } from "./local";
+import { assertCompatibleDataDir } from "./pglite-path";
 
 await test("refuses data directories from an older PostgreSQL major", () => {
   const dir = mkdtempSync(join(tmpdir(), "ctrl-y-pglite-"));
   try {
     writeFileSync(join(dir, "PG_VERSION"), "17\n");
     assert.throws(() => createLocalDatabase(dir), /PostgreSQL 17 のローカルDB/);
+    assert.throws(() => assertCompatibleDataDir(`file://${dir}`), /PostgreSQL 17 のローカルDB/);
+    assert.throws(() => assertCompatibleDataDir(dir), /PGLITE_PATH/);
+    writeFileSync(join(dir, "PG_VERSION"), "18\n");
+    assert.doesNotThrow(() => assertCompatibleDataDir(dir));
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
