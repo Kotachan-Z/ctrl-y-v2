@@ -9,6 +9,7 @@ import {
   pendingOperations,
   replayOfflineOperations,
   startOfflineReplay,
+  syncOfflineApiCache,
   tokens,
 } from "../../web/src/api";
 
@@ -364,19 +365,64 @@ describe("offline status queue", () => {
   });
 });
 
+const authorizationHash = async (token: string) =>
+  Array.from(
+    new Uint8Array(
+      await crypto.subtle.digest("SHA-256", new TextEncoder().encode(`Bearer ${token}`)),
+    ),
+    (byte) => byte.toString(16).padStart(2, "0"),
+  ).join("");
+
+describe("offline API cache sync", () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+    vi.unstubAllGlobals();
+  });
+  it("re-reads the tokens when another tab changes them while hashing", async () => {
+    const storage = new Map<string, string>([["ctrl-y.parent-token", "old"]]);
+    vi.stubGlobal("localStorage", {
+      getItem: (key: string) => storage.get(key) ?? null,
+      setItem: (key: string, value: string) => storage.set(key, value),
+      removeItem: (key: string) => storage.delete(key),
+    });
+    const postMessage = vi.fn();
+    vi.stubGlobal("navigator", { serviceWorker: { controller: { postMessage } } });
+    const digest = crypto.subtle.digest.bind(crypto.subtle);
+    vi.spyOn(crypto.subtle, "digest").mockImplementationOnce(async (algorithm, data) => {
+      // Another tab refreshes the token and logs the child in while this tab hashes.
+      storage.set("ctrl-y.parent-token", "new");
+      storage.set("ctrl-y.child-token", "child");
+      return digest(algorithm, data);
+    });
+    await syncOfflineApiCache();
+    expect(postMessage).toHaveBeenCalledOnce();
+    expect(postMessage).toHaveBeenCalledWith({
+      type: "ctrl-y-prune-api-cache",
+      keep: [await authorizationHash("new"), await authorizationHash("child")],
+    });
+  });
+});
+
 function worker() {
   const responses = new Map<string, Response>();
   const fetchMock = vi.fn<typeof fetch>();
   const handlers = new Map<
     string,
-    (event: { request: Request; respondWith: (response: Promise<Response>) => void }) => void
+    (
+      event:
+        | { request: Request; respondWith: (response: Promise<Response>) => void }
+        | { data: unknown; waitUntil: (promise: Promise<unknown>) => void },
+    ) => void
   >();
   const cache = {
-    match: async (key: string) => responses.get(key)?.clone(),
+    match: async (key: string | Request) =>
+      responses.get(typeof key === "string" ? key : key.url)?.clone(),
     put: async (key: string, response: Response) => {
       responses.set(key, response);
     },
-    delete: async (key: string) => responses.delete(key),
+    delete: async (key: string | Request) =>
+      responses.delete(typeof key === "string" ? key : key.url),
+    keys: async () => [...responses.keys()].map((key) => new Request(key)),
   };
   runInNewContext(readFileSync(new URL("../../web/public/sw.js", import.meta.url), "utf8"), {
     self: {
@@ -393,6 +439,8 @@ function worker() {
     URL,
     Response,
     Headers,
+    // Share the host Date so tests can control the worker's clock.
+    Date,
   });
   const request = (path: string, token = "parent", method = "GET") => {
     let result: Promise<Response> | undefined;
@@ -407,9 +455,108 @@ function worker() {
     });
     return result;
   };
-  return { fetchMock, request, responses, cache };
+  const message = async (data: unknown) => {
+    const pending: Promise<unknown>[] = [];
+    handlers.get("message")!({
+      data,
+      waitUntil: (promise: Promise<unknown>) => pending.push(promise),
+    });
+    await Promise.all(pending);
+  };
+  return { fetchMock, request, message, responses, cache };
 }
 describe("service worker API cache", () => {
+  it("prunes cached API data for credentials the pages no longer hold", async () => {
+    const { fetchMock, request, message, responses } = worker();
+    fetchMock.mockImplementation(async () => Response.json({ ok: true }));
+    for (const token of ["parent", "child", "expired"]) {
+      await request("/api/tasks", token);
+      await request("/api/session", token);
+    }
+    expect(responses.size).toBe(6);
+    for (const data of [
+      undefined,
+      { type: "other", keep: [] },
+      { type: "ctrl-y-prune-api-cache" },
+      { type: "ctrl-y-prune-api-cache", keep: ["not-a-hash"] },
+    ])
+      await message(data);
+    expect(responses.size).toBe(6);
+    const keep = [await authorizationHash("parent"), await authorizationHash("child")];
+    // "expired" was reported earlier, so dropping it from the report retires it.
+    await message({
+      type: "ctrl-y-prune-api-cache",
+      keep: [...keep, await authorizationHash("expired")],
+    });
+    expect(responses.size).toBe(6);
+    await message({ type: "ctrl-y-prune-api-cache", keep });
+    expect(responses.size).toBe(4);
+    expect([...responses.keys()].every((key) => keep.some((h) => key.includes(`/${h}/`)))).toBe(
+      true,
+    );
+    await message({ type: "ctrl-y-prune-api-cache", keep: [] });
+    expect(responses.size).toBe(0);
+  });
+  it("keeps a fresh login's unreported cache but drops stale unreported entries", async () => {
+    const { fetchMock, request, message, responses } = worker();
+    fetchMock.mockImplementation(async () => Response.json({ ok: true }));
+    const parent = await authorizationHash("parent");
+    await message({ type: "ctrl-y-prune-api-cache", keep: [parent] });
+    // The child logs in and caches before its tab reports the new token.
+    await request("/api/tasks", "child");
+    await message({ type: "ctrl-y-prune-api-cache", keep: [parent] });
+    expect(responses.size).toBe(1);
+    // Past the grace period (e.g. left over from before a worker restart) it is removed.
+    const now = Date.now();
+    vi.spyOn(Date, "now").mockReturnValue(now + 61_000);
+    await message({ type: "ctrl-y-prune-api-cache", keep: [parent] });
+    expect(responses.size).toBe(0);
+    vi.restoreAllMocks();
+  });
+  it("keeps an old unreported entry that a report made current during the prune", async () => {
+    const { fetchMock, request, message, responses, cache } = worker();
+    fetchMock.mockImplementation(async () => Response.json({ ok: true }));
+    // Cached before a worker restart: unknown to this worker and past the grace period.
+    await request("/api/tasks", "child");
+    const now = Date.now();
+    vi.spyOn(Date, "now").mockReturnValue(now + 61_000);
+    const match = cache.match;
+    let report!: Promise<void>;
+    cache.match = async (key) => {
+      // The child's tab reports its token while this prune looks the entry up.
+      report = message({
+        type: "ctrl-y-prune-api-cache",
+        keep: [await authorizationHash("child")],
+      });
+      return match(key);
+    };
+    await message({ type: "ctrl-y-prune-api-cache", keep: [] });
+    await report;
+    expect(responses.size).toBe(1);
+    vi.restoreAllMocks();
+  });
+  it("does not re-cache a retired credential's in-flight response", async () => {
+    const { fetchMock, request, message, responses } = worker();
+    fetchMock.mockImplementation(async () => Response.json({ ok: true }));
+    const parent = await authorizationHash("parent");
+    await message({ type: "ctrl-y-prune-api-cache", keep: [parent] });
+    let finish!: (response: Response) => void;
+    fetchMock.mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          finish = resolve;
+        }),
+    );
+    const pending = request("/api/tasks");
+    await vi.waitFor(() => expect(finish).toBeDefined());
+    await message({ type: "ctrl-y-prune-api-cache", keep: [] });
+    finish(Response.json({ late: true }));
+    expect(await (await pending)!.json()).toEqual({ late: true });
+    expect(responses.size).toBe(0);
+    // A token the pages have not reported yet (a fresh login) is still cached.
+    await request("/api/tasks", "new-login");
+    expect(responses.size).toBe(1);
+  });
   it.each([
     "/api/tasks",
     "/api/tasks?status=TODO",

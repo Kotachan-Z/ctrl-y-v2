@@ -44,6 +44,18 @@ const offlinePaths =
   /^\/api\/(?:tasks(?:\/[^/]+)?|payroll|children(?:\/[^/]+\/payroll)?|settings\/payroll|session)$/;
 
 const apiRequests = new Map();
+// Credential hashes the pages last reported, and every hash they ever reported. A hash that was
+// reported before but not in the latest message belongs to a refreshed or logged-out token.
+let activeHashes;
+const knownHashes = new Set();
+const keyHash = (key) => {
+  const [, namespace, hash] = new URL(key).pathname.split("/");
+  return namespace === "__offline_api" ? hash : undefined;
+};
+const retired = (key) => {
+  const hash = keyHash(key);
+  return activeHashes !== undefined && knownHashes.has(hash) && !activeHashes.has(hash);
+};
 
 async function apiNetworkFirst(request) {
   let cache;
@@ -89,7 +101,17 @@ async function apiFetch(request, cache, key) {
   }
   if (cache && key) {
     try {
-      if (response.ok) await cache.put(key, response.clone());
+      if (response.ok && !retired(key)) {
+        const headers = new Headers(response.headers);
+        headers.set("X-Ctrl-Y-Cached-At", String(Date.now()));
+        const copy = response.clone();
+        await cache.put(
+          key,
+          new Response(copy.body, { status: copy.status, statusText: copy.statusText, headers }),
+        );
+        // A logout or refresh reported during the write must not leave this copy behind.
+        if (retired(key)) await cache.delete(key);
+      }
       // Never use a previous success after the server rejects this credential/resource.
       else if (response.status >= 400 && response.status < 500) await cache.delete(key);
     } catch {
@@ -147,6 +169,44 @@ self.addEventListener("fetch", (event) => {
       }
     })(),
   );
+});
+// Pages send the credential hashes still in use; cached API data for any other
+// credential (refreshed or logged out) is unreachable, so drop it. Runs are serialized and
+// always use the latest report.
+let pruning = Promise.resolve();
+// A fresh login can cache responses before its hash is reported; keep unreported hashes that
+// recent, and drop older ones (left over from before a worker restart, for example).
+const UNREPORTED_GRACE_MS = 60_000;
+async function pruneApiCache() {
+  try {
+    const cache = await caches.open(API_CACHE);
+    for (const request of await cache.keys()) {
+      const hash = keyHash(request.url);
+      if (hash === undefined || activeHashes.has(hash)) continue;
+      if (!knownHashes.has(hash)) {
+        const cachedAt = Number((await cache.match(request))?.headers.get("X-Ctrl-Y-Cached-At"));
+        if (Date.now() - cachedAt < UNREPORTED_GRACE_MS) continue;
+        // A report that arrived during the lookup may have made this hash current.
+        if (activeHashes.has(hash)) continue;
+      }
+      await cache.delete(request);
+    }
+  } catch {
+    // Pruning is best-effort; the next message retries it.
+  }
+}
+self.addEventListener("message", (event) => {
+  const { data } = event;
+  if (
+    data?.type !== "ctrl-y-prune-api-cache" ||
+    !Array.isArray(data.keep) ||
+    !data.keep.every((hash) => typeof hash === "string" && /^[0-9a-f]{64}$/.test(hash))
+  )
+    return;
+  activeHashes = new Set(data.keep);
+  for (const hash of data.keep) knownHashes.add(hash);
+  pruning = pruning.then(pruneApiCache);
+  event.waitUntil(pruning);
 });
 self.addEventListener("push", (event) => {
   let payload;
