@@ -44,6 +44,18 @@ const offlinePaths =
   /^\/api\/(?:tasks(?:\/[^/]+)?|payroll|children(?:\/[^/]+\/payroll)?|settings\/payroll|session)$/;
 
 const apiRequests = new Map();
+// Credential hashes the pages last reported, and every hash they ever reported. A hash that was
+// reported before but not in the latest message belongs to a refreshed or logged-out token.
+let activeHashes;
+const knownHashes = new Set();
+const keyHash = (key) => {
+  const [, namespace, hash] = new URL(key).pathname.split("/");
+  return namespace === "__offline_api" ? hash : undefined;
+};
+const retired = (key) => {
+  const hash = keyHash(key);
+  return activeHashes !== undefined && knownHashes.has(hash) && !activeHashes.has(hash);
+};
 
 async function apiNetworkFirst(request) {
   let cache;
@@ -89,7 +101,11 @@ async function apiFetch(request, cache, key) {
   }
   if (cache && key) {
     try {
-      if (response.ok) await cache.put(key, response.clone());
+      if (response.ok && !retired(key)) {
+        await cache.put(key, response.clone());
+        // A logout or refresh reported during the write must not leave this copy behind.
+        if (retired(key)) await cache.delete(key);
+      }
       // Never use a previous success after the server rejects this credential/resource.
       else if (response.status >= 400 && response.status < 500) await cache.delete(key);
     } catch {
@@ -149,13 +165,15 @@ self.addEventListener("fetch", (event) => {
   );
 });
 // Pages send the credential hashes still in use; cached API data for any other
-// credential (refreshed or logged out) is unreachable, so drop it.
-async function pruneApiCache(keep) {
+// credential (refreshed or logged out) is unreachable, so drop it. Runs are serialized and
+// always use the latest report.
+let pruning = Promise.resolve();
+async function pruneApiCache() {
   try {
     const cache = await caches.open(API_CACHE);
     for (const request of await cache.keys()) {
-      const [, namespace, hash] = new URL(request.url).pathname.split("/");
-      if (namespace === "__offline_api" && !keep.has(hash)) await cache.delete(request);
+      const hash = keyHash(request.url);
+      if (hash !== undefined && !activeHashes.has(hash)) await cache.delete(request);
     }
   } catch {
     // Pruning is best-effort; the next message retries it.
@@ -169,7 +187,10 @@ self.addEventListener("message", (event) => {
     !data.keep.every((hash) => typeof hash === "string" && /^[0-9a-f]{64}$/.test(hash))
   )
     return;
-  event.waitUntil(pruneApiCache(new Set(data.keep)));
+  activeHashes = new Set(data.keep);
+  for (const hash of data.keep) knownHashes.add(hash);
+  pruning = pruning.then(pruneApiCache);
+  event.waitUntil(pruning);
 });
 self.addEventListener("push", (event) => {
   let payload;

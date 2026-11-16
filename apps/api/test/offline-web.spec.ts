@@ -9,6 +9,7 @@ import {
   pendingOperations,
   replayOfflineOperations,
   startOfflineReplay,
+  syncOfflineApiCache,
   tokens,
 } from "../../web/src/api";
 
@@ -372,6 +373,36 @@ const authorizationHash = async (token: string) =>
     (byte) => byte.toString(16).padStart(2, "0"),
   ).join("");
 
+describe("offline API cache sync", () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+    vi.unstubAllGlobals();
+  });
+  it("re-reads the tokens when another tab changes them while hashing", async () => {
+    const storage = new Map<string, string>([["ctrl-y.parent-token", "old"]]);
+    vi.stubGlobal("localStorage", {
+      getItem: (key: string) => storage.get(key) ?? null,
+      setItem: (key: string, value: string) => storage.set(key, value),
+      removeItem: (key: string) => storage.delete(key),
+    });
+    const postMessage = vi.fn();
+    vi.stubGlobal("navigator", { serviceWorker: { controller: { postMessage } } });
+    const digest = crypto.subtle.digest.bind(crypto.subtle);
+    vi.spyOn(crypto.subtle, "digest").mockImplementationOnce(async (algorithm, data) => {
+      // Another tab refreshes the token and logs the child in while this tab hashes.
+      storage.set("ctrl-y.parent-token", "new");
+      storage.set("ctrl-y.child-token", "child");
+      return digest(algorithm, data);
+    });
+    await syncOfflineApiCache();
+    expect(postMessage).toHaveBeenCalledOnce();
+    expect(postMessage).toHaveBeenCalledWith({
+      type: "ctrl-y-prune-api-cache",
+      keep: [await authorizationHash("new"), await authorizationHash("child")],
+    });
+  });
+});
+
 describe("service worker API cache", () => {
   function worker() {
     const responses = new Map<string, Response>();
@@ -456,6 +487,28 @@ describe("service worker API cache", () => {
     );
     await message({ type: "ctrl-y-prune-api-cache", keep: [] });
     expect(responses.size).toBe(0);
+  });
+  it("does not re-cache a retired credential's in-flight response", async () => {
+    const { fetchMock, request, message, responses } = worker();
+    fetchMock.mockImplementation(async () => Response.json({ ok: true }));
+    const parent = await authorizationHash("parent");
+    await message({ type: "ctrl-y-prune-api-cache", keep: [parent] });
+    let finish!: (response: Response) => void;
+    fetchMock.mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          finish = resolve;
+        }),
+    );
+    const pending = request("/api/tasks");
+    await vi.waitFor(() => expect(finish).toBeDefined());
+    await message({ type: "ctrl-y-prune-api-cache", keep: [] });
+    finish(Response.json({ late: true }));
+    expect(await (await pending)!.json()).toEqual({ late: true });
+    expect(responses.size).toBe(0);
+    // A token the pages have not reported yet (a fresh login) is still cached.
+    await request("/api/tasks", "new-login");
+    expect(responses.size).toBe(1);
   });
   it.each([
     "/api/tasks",

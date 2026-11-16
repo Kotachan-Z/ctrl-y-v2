@@ -46,12 +46,17 @@ export async function syncOfflineApiCache() {
   try {
     const worker = navigator.serviceWorker?.controller;
     if (!worker) return;
-    const keep = await Promise.all(
-      (["parent", "child"] as const).flatMap((role) => {
-        const token = tokens.get(role);
-        return token ? [authorizationHash(token)] : [];
-      }),
-    );
+    const held = () => (["parent", "child"] as const).map((role) => tokens.get(role));
+    let snapshot: (string | null)[];
+    let keep: string[];
+    // Re-read after hashing: another tab may have logged in or refreshed meanwhile, and a stale
+    // list sent after its message would delete the cache it just started using.
+    do {
+      snapshot = held();
+      keep = await Promise.all(
+        snapshot.flatMap((token) => (token ? [authorizationHash(token)] : [])),
+      );
+    } while (held().some((token, i) => token !== snapshot[i]));
     // ServiceWorker#postMessage has no targetOrigin; the worker is same-origin by definition.
     // oxlint-disable-next-line unicorn/require-post-message-target-origin
     worker.postMessage({ type: "ctrl-y-prune-api-cache", keep });
@@ -407,7 +412,12 @@ export function startOfflineReplay() {
   document.addEventListener("visibilitychange", visible);
   retry();
   void syncOfflineApiCache();
+  // The first load is not controlled yet, and an updated worker takes over later. Startup must
+  // not fail where the container is missing or partial (unsupported browsers, test doubles).
+  const container = navigator.serviceWorker as Partial<ServiceWorkerContainer> | undefined;
+  container?.addEventListener?.("controllerchange", syncOfflineApiCache);
   return () => {
+    container?.removeEventListener?.("controllerchange", syncOfflineApiCache);
     window.removeEventListener("online", retry);
     document.removeEventListener("visibilitychange", visible);
   };
