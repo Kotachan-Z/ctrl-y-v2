@@ -102,7 +102,13 @@ async function apiFetch(request, cache, key) {
   if (cache && key) {
     try {
       if (response.ok && !retired(key)) {
-        await cache.put(key, response.clone());
+        const headers = new Headers(response.headers);
+        headers.set("X-Ctrl-Y-Cached-At", String(Date.now()));
+        const copy = response.clone();
+        await cache.put(
+          key,
+          new Response(copy.body, { status: copy.status, statusText: copy.statusText, headers }),
+        );
         // A logout or refresh reported during the write must not leave this copy behind.
         if (retired(key)) await cache.delete(key);
       }
@@ -168,12 +174,20 @@ self.addEventListener("fetch", (event) => {
 // credential (refreshed or logged out) is unreachable, so drop it. Runs are serialized and
 // always use the latest report.
 let pruning = Promise.resolve();
+// A fresh login can cache responses before its hash is reported; keep unreported hashes that
+// recent, and drop older ones (left over from before a worker restart, for example).
+const UNREPORTED_GRACE_MS = 60_000;
 async function pruneApiCache() {
   try {
     const cache = await caches.open(API_CACHE);
     for (const request of await cache.keys()) {
       const hash = keyHash(request.url);
-      if (hash !== undefined && !activeHashes.has(hash)) await cache.delete(request);
+      if (hash === undefined || activeHashes.has(hash)) continue;
+      if (!knownHashes.has(hash)) {
+        const cachedAt = Number((await cache.match(request))?.headers.get("X-Ctrl-Y-Cached-At"));
+        if (Date.now() - cachedAt < UNREPORTED_GRACE_MS) continue;
+      }
+      await cache.delete(request);
     }
   } catch {
     // Pruning is best-effort; the next message retries it.

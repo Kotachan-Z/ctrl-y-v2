@@ -416,7 +416,8 @@ describe("service worker API cache", () => {
       ) => void
     >();
     const cache = {
-      match: async (key: string) => responses.get(key)?.clone(),
+      match: async (key: string | Request) =>
+        responses.get(typeof key === "string" ? key : key.url)?.clone(),
       put: async (key: string, response: Response) => {
         responses.set(key, response);
       },
@@ -439,6 +440,8 @@ describe("service worker API cache", () => {
       URL,
       Response,
       Headers,
+      // Share the host Date so tests can control the worker's clock.
+      Date,
     });
     const request = (path: string, token = "parent", method = "GET") => {
       let result: Promise<Response> | undefined;
@@ -480,6 +483,12 @@ describe("service worker API cache", () => {
       await message(data);
     expect(responses.size).toBe(6);
     const keep = [await authorizationHash("parent"), await authorizationHash("child")];
+    // "expired" was reported earlier, so dropping it from the report retires it.
+    await message({
+      type: "ctrl-y-prune-api-cache",
+      keep: [...keep, await authorizationHash("expired")],
+    });
+    expect(responses.size).toBe(6);
     await message({ type: "ctrl-y-prune-api-cache", keep });
     expect(responses.size).toBe(4);
     expect([...responses.keys()].every((key) => keep.some((h) => key.includes(`/${h}/`)))).toBe(
@@ -487,6 +496,22 @@ describe("service worker API cache", () => {
     );
     await message({ type: "ctrl-y-prune-api-cache", keep: [] });
     expect(responses.size).toBe(0);
+  });
+  it("keeps a fresh login's unreported cache but drops stale unreported entries", async () => {
+    const { fetchMock, request, message, responses } = worker();
+    fetchMock.mockImplementation(async () => Response.json({ ok: true }));
+    const parent = await authorizationHash("parent");
+    await message({ type: "ctrl-y-prune-api-cache", keep: [parent] });
+    // The child logs in and caches before its tab reports the new token.
+    await request("/api/tasks", "child");
+    await message({ type: "ctrl-y-prune-api-cache", keep: [parent] });
+    expect(responses.size).toBe(1);
+    // Past the grace period (e.g. left over from before a worker restart) it is removed.
+    const now = Date.now();
+    vi.spyOn(Date, "now").mockReturnValue(now + 61_000);
+    await message({ type: "ctrl-y-prune-api-cache", keep: [parent] });
+    expect(responses.size).toBe(0);
+    vi.restoreAllMocks();
   });
   it("does not re-cache a retired credential's in-flight response", async () => {
     const { fetchMock, request, message, responses } = worker();
