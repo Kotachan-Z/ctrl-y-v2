@@ -132,6 +132,62 @@ for (const conflicts of [0, 1, 2]) {
   });
 }
 
+for (const [outcome, button] of [
+  ["saved", "通知を無効にする"],
+  ["conflict", "通知を有効にする"],
+  ["offline", "通知を無効にする"],
+] as const) {
+  test(`existing browser subscription is re-registered on open (${outcome})`, async ({ page }) => {
+    await page.addInitScript(() => {
+      localStorage.setItem("ctrl-y.parent-token", "test-parent");
+      const subscription = {
+        endpoint: "https://push.example.test/existing",
+        toJSON: () => ({
+          endpoint: "https://push.example.test/existing",
+          keys: { p256dh: "key", auth: "auth" },
+        }),
+        unsubscribe: () => Promise.resolve(true),
+      };
+      const registration = {
+        pushManager: { getSubscription: () => Promise.resolve(subscription) },
+      };
+      Object.defineProperty(navigator, "serviceWorker", {
+        value: {
+          register: () => Promise.resolve(registration),
+          ready: Promise.resolve(registration),
+        },
+      });
+      Object.defineProperty(window, "PushManager", { value: function () {} });
+      Object.defineProperty(window, "Notification", {
+        value: { requestPermission: () => Promise.resolve("granted") },
+      });
+    });
+    await page.route("**/api/session", (route) =>
+      route.fulfill({ json: { identity: { role: "parent", id: "parent" } } }),
+    );
+    const methods: string[] = [];
+    await page.route("**/api/parents/push-subscription", async (route) => {
+      methods.push(route.request().method());
+      expect(route.request().postDataJSON()).toEqual({
+        endpoint: "https://push.example.test/existing",
+        keys: { p256dh: "key", auth: "auth" },
+      });
+      if (outcome === "offline") await route.abort("internetdisconnected");
+      else if (outcome === "conflict")
+        await route.fulfill({
+          status: 409,
+          json: { error: "この通知の購読は別の親に登録されています" },
+        });
+      else await route.fulfill({ json: { ok: true } });
+    });
+    await page.goto("/settings/notifications");
+    await expect(page.getByRole("button", { name: button })).toBeEnabled();
+    // StrictMode runs the effect twice in development; the PUT is an idempotent upsert.
+    expect(methods.length).toBeGreaterThan(0);
+    expect(methods.every((method) => method === "PUT")).toBe(true);
+  });
+}
+
 test("PWA metadata refreshes online and falls back to cache offline", async ({ page, context }) => {
   await page.goto("/");
   await page.evaluate(async () => {

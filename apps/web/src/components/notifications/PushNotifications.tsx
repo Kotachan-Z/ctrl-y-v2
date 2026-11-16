@@ -15,8 +15,25 @@ export default function PushNotifications() {
     let active = true;
     registerServiceWorker()
       .then((registration) => registration.pushManager.getSubscription())
-      .then((subscription) => {
-        if (active) setEnabled(subscription !== null);
+      .then(async (subscription) => {
+        if (!subscription) return false;
+        // Re-register so the server copy matches this browser: it may have been evicted by
+        // the per-parent device limit or still belong to a parent who logged out here.
+        try {
+          await api("/parents/push-subscription", {
+            role: "parent",
+            method: "PUT",
+            body: subscription.toJSON(),
+          });
+        } catch (e) {
+          // 409: another parent owns this browser's subscription, and enabling resubscribes
+          // it. Any other failure falls back to the browser's own state, as before.
+          return !(e instanceof ApiError && e.status === 409);
+        }
+        return true;
+      })
+      .then((subscribed) => {
+        if (active) setEnabled(subscribed);
       })
       .catch(() => {
         if (active) setMessage("通知の設定を確認できませんでした");
