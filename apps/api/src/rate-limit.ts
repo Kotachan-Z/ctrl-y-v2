@@ -3,15 +3,16 @@ import { HTTPException } from "hono/http-exception";
 // Bound attacker-controlled identifiers while allowing normal per-process traffic.
 export const FAILURE_LIMITER_MAX_ENTRIES = 10_000;
 
+function reject(): never {
+  throw new HTTPException(429, { message: "試行回数が多すぎます。60秒後に再試行してください" });
+}
+
 // Per isolate only: multiple Workers isolates do not share these counters.
 export function createFailureLimiter(countAll = false) {
   const entries = new Map<string, { failures: number; inFlight: number; expiresAt: number }>();
   // Insertion order tracks when entries became idle; eviction also checks lockout expiry.
   const idle = new Set<string>();
   const duration = 60_000;
-  const reject = () => {
-    throw new HTTPException(429, { message: "試行回数が多すぎます。60秒後に再試行してください" });
-  };
   const limit = async <T extends Response>(key: string, attempt: () => Promise<T>) => {
     const now = Date.now();
     let entry = entries.get(key);
