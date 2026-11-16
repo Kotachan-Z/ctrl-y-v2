@@ -1,6 +1,13 @@
 import { useEffect, useRef, useState } from "react";
 
-import { api, ApiError, bumpPushGeneration, pushGeneration, pushSubscriptionLock } from "../../api";
+import {
+  api,
+  ApiError,
+  bumpPushGeneration,
+  pushGeneration,
+  pushSubscriptionLock,
+  tokens,
+} from "../../api";
 import { registerServiceWorker, urlBase64ToUint8Array } from "../../push";
 import { primaryButton, neutralButton, cardClass } from "../../styles/shared";
 
@@ -57,8 +64,10 @@ export default function PushNotifications() {
     };
   }, [supported]);
   async function toggle() {
-    // Read synchronously at the click, before any await, to detect later changes elsewhere.
+    // Read synchronously at the click, before any await, to detect later changes elsewhere
+    // (another tab's toggle, a logout, or a different parent logging in).
     const generation = pushGeneration();
+    const session = tokens.getSessionId("parent");
     setBusy(true);
     setMessage("");
     try {
@@ -73,7 +82,7 @@ export default function PushNotifications() {
         // The page was left, or another tab (or a logout) changed the subscription while this
         // click waited for permission or the lock; acting now would undo that newer action.
         if (!mounted.current) return;
-        if (pushGeneration() !== generation) {
+        if (pushGeneration() !== generation || tokens.getSessionId("parent") !== session) {
           setEnabled(subscription !== null);
           setMessage("別の画面で通知の設定が変わりました。必要ならもう一度操作してください");
           return;

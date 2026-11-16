@@ -240,55 +240,60 @@ test("a stale re-registration finishes before the device is unsubscribed", async
   expect(methods.slice(0, -1).every((method) => method === "PUT")).toBe(true);
 });
 
-test("an enable that waited for permission yields to a newer change in another tab", async ({
-  page,
-}) => {
-  await page.addInitScript(() => {
-    localStorage.setItem("ctrl-y.parent-token", "test-parent");
-    const registration = {
-      pushManager: {
-        getSubscription: () => Promise.resolve(null),
-        subscribe: () => {
-          localStorage.setItem("push-subscribes", "1");
-          return Promise.reject(new Error("Must not subscribe"));
+for (const [change, key] of [
+  ["a toggle or logout", "ctrl-y.push-generation"],
+  ["another parent's login", "ctrl-y.parent-session-id"],
+] as const) {
+  test(`an enable that waited for permission yields to ${change} in another tab`, async ({
+    page,
+  }) => {
+    await page.addInitScript((changedKey) => {
+      localStorage.setItem("ctrl-y.parent-token", "test-parent");
+      const registration = {
+        pushManager: {
+          getSubscription: () => Promise.resolve(null),
+          subscribe: () => {
+            localStorage.setItem("push-subscribes", "1");
+            return Promise.reject(new Error("Must not subscribe"));
+          },
         },
-      },
-    };
-    Object.defineProperty(navigator, "serviceWorker", {
-      value: {
-        register: () => Promise.resolve(registration),
-        ready: Promise.resolve(registration),
-      },
-    });
-    Object.defineProperty(window, "PushManager", { value: function () {} });
-    Object.defineProperty(window, "Notification", {
-      value: {
-        requestPermission: () => {
-          // While the prompt is open, another tab disables notifications.
-          localStorage.setItem("ctrl-y.push-generation", "other-tab");
-          return Promise.resolve("granted");
+      };
+      Object.defineProperty(navigator, "serviceWorker", {
+        value: {
+          register: () => Promise.resolve(registration),
+          ready: Promise.resolve(registration),
         },
-      },
+      });
+      Object.defineProperty(window, "PushManager", { value: function () {} });
+      Object.defineProperty(window, "Notification", {
+        value: {
+          requestPermission: () => {
+            // While the prompt is open, another tab changes the subscription or the account.
+            localStorage.setItem(changedKey, "other-tab");
+            return Promise.resolve("granted");
+          },
+        },
+      });
+    }, key);
+    await page.route("**/api/session", (route) =>
+      route.fulfill({ json: { identity: { role: "parent", id: "parent" } } }),
+    );
+    const methods: string[] = [];
+    await page.route("**/api/**", async (route) => {
+      if (route.request().url().endsWith("/api/session")) return route.fallback();
+      methods.push(route.request().method());
+      await route.fulfill({ json: { publicKey: "-_8A" } });
     });
+    await page.goto("/settings/notifications");
+    await page.getByRole("button", { name: "通知を有効にする" }).click();
+    await expect(page.getByRole("status")).toHaveText(
+      "別の画面で通知の設定が変わりました。必要ならもう一度操作してください",
+    );
+    await expect(page.getByRole("button", { name: "通知を有効にする" })).toBeEnabled();
+    expect(methods).toEqual([]);
+    expect(await page.evaluate(() => localStorage.getItem("push-subscribes"))).toBeNull();
   });
-  await page.route("**/api/session", (route) =>
-    route.fulfill({ json: { identity: { role: "parent", id: "parent" } } }),
-  );
-  const methods: string[] = [];
-  await page.route("**/api/**", async (route) => {
-    if (route.request().url().endsWith("/api/session")) return route.fallback();
-    methods.push(route.request().method());
-    await route.fulfill({ json: { publicKey: "-_8A" } });
-  });
-  await page.goto("/settings/notifications");
-  await page.getByRole("button", { name: "通知を有効にする" }).click();
-  await expect(page.getByRole("status")).toHaveText(
-    "別の画面で通知の設定が変わりました。必要ならもう一度操作してください",
-  );
-  await expect(page.getByRole("button", { name: "通知を有効にする" })).toBeEnabled();
-  expect(methods).toEqual([]);
-  expect(await page.evaluate(() => localStorage.getItem("push-subscribes"))).toBeNull();
-});
+}
 
 test("PWA metadata refreshes online and falls back to cache offline", async ({ page, context }) => {
   await page.goto("/");

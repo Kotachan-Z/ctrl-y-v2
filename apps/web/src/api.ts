@@ -179,6 +179,8 @@ export async function logout(role: Role) {
     }, AbortSignal.timeout(10_000));
   } catch (error) {
     if (!(error instanceof DOMException && error.name === "TimeoutError")) throw error;
+    // Still invalidate subscription actions that are waiting, as a completed logout would.
+    bumpPushGeneration();
     await run(false);
   }
 }

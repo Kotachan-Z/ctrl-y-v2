@@ -103,5 +103,7 @@ test("parent logout skips push cleanup when the subscription lock stays busy", a
   expect(tokens.get("parent")).toBeNull();
   expect(send).toHaveBeenCalledWith("/api/auth/logout", expect.anything());
   expect(getRegistration).not.toHaveBeenCalled();
+  // Waiting enable/disable clicks must still notice the logout.
+  expect(storage.get("ctrl-y.push-generation")).toBeTruthy();
   vi.restoreAllMocks();
 });
