@@ -5,7 +5,7 @@ README から移したデータベースと Cloudflare Workers デプロイの�
 ## データベース
 
 ローカルは `.pglite/database`、PostgreSQL dialect、`snake_case`、timestamp prefix の migration を使用。
-`parents` / `children` / `tasks` / `payroll` / `push_retry_queue` / `refresh_tokens` の6テーブルです。
+`parents` / `children` / `tasks` / `payroll` / `push_subscriptions` / `push_retry_queue` / `refresh_tokens` の7テーブルです。
 Phase 1 の migration は再生成済みのため、既存の疎通確認DBは `mise run dev` で初期化してください。
 seed は `parent@example.test` / `local-password`、子供のあいことばは `ひみつのことば` です（開発専用）。
 `PGLITE_PATH` でローカルDBの保存先を差し替えられます。APIとmigrationには同じ絶対パスを渡してください。
