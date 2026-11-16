@@ -82,6 +82,12 @@ const sessionLock = async <T>(role: Role, action: () => Promise<T>): Promise<T> 
   typeof navigator !== "undefined" && navigator.locks
     ? await navigator.locks.request(`ctrl-y.session.${role}`, action)
     : action();
+// Serializes push subscription writes (settings page, logout) across mounts and tabs so a stale
+// re-registration cannot land after an unsubscribe. Always taken before the session lock.
+export const pushSubscriptionLock = async <T>(action: () => Promise<T>): Promise<T> =>
+  typeof navigator !== "undefined" && navigator.locks
+    ? await navigator.locks.request("ctrl-y.push-subscription", action)
+    : action();
 async function refreshSession(
   role: Role,
   failedToken: string | null,
@@ -125,35 +131,37 @@ async function refreshSession(
 }
 export async function logout(role: Role) {
   await refreshing[role];
-  await sessionLock(role, async () => {
-    const refreshToken = tokens.getRefresh(role);
-    if (role === "parent" && "serviceWorker" in navigator) {
-      try {
-        const registration = await navigator.serviceWorker.getRegistration();
-        const subscription = await registration?.pushManager.getSubscription();
-        if (subscription) {
-          try {
-            // Avoid refresh re-entering the session lock held by logout.
-            await fetch("/api/parents/push-subscription", {
-              method: "DELETE",
-              headers: {
-                "Content-Type": "application/json",
-                Authorization: `Bearer ${tokens.get(role)}`,
-              },
-              body: JSON.stringify({ endpoint: subscription.endpoint }),
-              signal: AbortSignal.timeout(5000),
-            });
-          } finally {
-            await subscription.unsubscribe();
+  const run = () =>
+    sessionLock(role, async () => {
+      const refreshToken = tokens.getRefresh(role);
+      if (role === "parent" && "serviceWorker" in navigator) {
+        try {
+          const registration = await navigator.serviceWorker.getRegistration();
+          const subscription = await registration?.pushManager.getSubscription();
+          if (subscription) {
+            try {
+              // Avoid refresh re-entering the session lock held by logout.
+              await fetch("/api/parents/push-subscription", {
+                method: "DELETE",
+                headers: {
+                  "Content-Type": "application/json",
+                  Authorization: `Bearer ${tokens.get(role)}`,
+                },
+                body: JSON.stringify({ endpoint: subscription.endpoint }),
+                signal: AbortSignal.timeout(5000),
+              });
+            } finally {
+              await subscription.unsubscribe();
+            }
           }
+        } catch {
+          // Push cleanup is best-effort and must not prevent logout.
         }
-      } catch {
-        // Push cleanup is best-effort and must not prevent logout.
       }
-    }
-    if (refreshToken) await api("/auth/logout", { body: { refreshToken } });
-    if (tokens.getRefresh(role) === refreshToken) await tokens.remove(role);
-  });
+      if (refreshToken) await api("/auth/logout", { body: { refreshToken } });
+      if (tokens.getRefresh(role) === refreshToken) await tokens.remove(role);
+    });
+  await (role === "parent" ? pushSubscriptionLock(run) : run());
 }
 export class ApiError extends Error {
   constructor(

@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 
-import { api, ApiError } from "../../api";
+import { api, ApiError, pushSubscriptionLock } from "../../api";
 import { registerServiceWorker, urlBase64ToUint8Array } from "../../push";
 import { primaryButton, neutralButton, cardClass } from "../../styles/shared";
 
@@ -14,24 +14,28 @@ export default function PushNotifications() {
     if (!supported) return;
     let active = true;
     registerServiceWorker()
-      .then((registration) => registration.pushManager.getSubscription())
-      .then(async (subscription) => {
-        if (!subscription) return false;
-        // Re-register so the server copy matches this browser: it may have been evicted by
-        // the per-parent device limit or still belong to a parent who logged out here.
-        try {
-          await api("/parents/push-subscription", {
-            role: "parent",
-            method: "PUT",
-            body: subscription.toJSON(),
-          });
-        } catch (e) {
-          // 409: another parent owns this browser's subscription, and enabling resubscribes
-          // it. Any other failure falls back to the browser's own state, as before.
-          return !(e instanceof ApiError && e.status === 409);
-        }
-        return true;
-      })
+      .then((registration) =>
+        pushSubscriptionLock(async () => {
+          const subscription = await registration.pushManager.getSubscription();
+          if (!subscription) return false;
+          // An unmounted page must not re-register after a later unsubscribe.
+          if (!active) return true;
+          // Re-register so the server copy matches this browser: it may have been evicted by
+          // the per-parent device limit or still belong to a parent who logged out here.
+          try {
+            await api("/parents/push-subscription", {
+              role: "parent",
+              method: "PUT",
+              body: subscription.toJSON(),
+            });
+          } catch (e) {
+            // 409: another parent owns this browser's subscription, and enabling resubscribes
+            // it. Any other failure falls back to the browser's own state, as before.
+            return !(e instanceof ApiError && e.status === 409);
+          }
+          return true;
+        }),
+      )
       .then((subscribed) => {
         if (active) setEnabled(subscribed);
       })
@@ -49,58 +53,61 @@ export default function PushNotifications() {
     setBusy(true);
     setMessage("");
     try {
+      // Ask before waiting on the lock: Safari only shows the prompt during the click.
       if (!enabled && (await Notification.requestPermission()) !== "granted") {
         setMessage("通知が許可されていません。ブラウザの設定を確認してください");
         return;
       }
-      const registration = await registerServiceWorker();
-      const subscription = await registration.pushManager.getSubscription();
-      if (enabled) {
-        if (subscription) {
-          await api("/parents/push-subscription", {
-            role: "parent",
-            method: "DELETE",
-            body: { endpoint: subscription.endpoint },
-          });
-          await subscription.unsubscribe();
-        }
-        setEnabled(false);
-        setMessage("通知を無効にしました");
-      } else {
-        const { publicKey } = await api<{ publicKey: string }>("/push/public-key");
-        let next =
-          subscription ??
-          (await registration.pushManager.subscribe({
-            userVisibleOnly: true,
-            applicationServerKey: urlBase64ToUint8Array(publicKey),
-          }));
-        const save = () =>
-          api("/parents/push-subscription", {
-            role: "parent",
-            method: "PUT",
-            body: next.toJSON(),
-          });
-        let created = !subscription;
-        try {
-          try {
-            await save();
-          } catch (e) {
-            if (!(e instanceof ApiError) || e.status !== 409) throw e;
-            await next.unsubscribe();
-            next = await registration.pushManager.subscribe({
+      await pushSubscriptionLock(async () => {
+        const registration = await registerServiceWorker();
+        const subscription = await registration.pushManager.getSubscription();
+        if (enabled) {
+          if (subscription) {
+            await api("/parents/push-subscription", {
+              role: "parent",
+              method: "DELETE",
+              body: { endpoint: subscription.endpoint },
+            });
+            await subscription.unsubscribe();
+          }
+          setEnabled(false);
+          setMessage("通知を無効にしました");
+        } else {
+          const { publicKey } = await api<{ publicKey: string }>("/push/public-key");
+          let next =
+            subscription ??
+            (await registration.pushManager.subscribe({
               userVisibleOnly: true,
               applicationServerKey: urlBase64ToUint8Array(publicKey),
+            }));
+          const save = () =>
+            api("/parents/push-subscription", {
+              role: "parent",
+              method: "PUT",
+              body: next.toJSON(),
             });
-            created = true;
-            await save();
+          let created = !subscription;
+          try {
+            try {
+              await save();
+            } catch (e) {
+              if (!(e instanceof ApiError) || e.status !== 409) throw e;
+              await next.unsubscribe();
+              next = await registration.pushManager.subscribe({
+                userVisibleOnly: true,
+                applicationServerKey: urlBase64ToUint8Array(publicKey),
+              });
+              created = true;
+              await save();
+            }
+          } catch (e) {
+            if (created) await next.unsubscribe();
+            throw e;
           }
-        } catch (e) {
-          if (created) await next.unsubscribe();
-          throw e;
+          setEnabled(true);
+          setMessage("通知を有効にしました");
         }
-        setEnabled(true);
-        setMessage("通知を有効にしました");
-      }
+      });
     } catch (e) {
       setMessage(e instanceof Error ? e.message : "通知の設定に失敗しました");
     } finally {

@@ -188,6 +188,58 @@ for (const [outcome, button] of [
   });
 }
 
+test("a stale re-registration finishes before the device is unsubscribed", async ({ page }) => {
+  await page.addInitScript(() => {
+    localStorage.setItem("ctrl-y.parent-token", "test-parent");
+    const subscription = {
+      endpoint: "https://push.example.test/existing",
+      toJSON: () => ({
+        endpoint: "https://push.example.test/existing",
+        keys: { p256dh: "key", auth: "auth" },
+      }),
+      unsubscribe: () => Promise.resolve(true),
+    };
+    const registration = {
+      pushManager: { getSubscription: () => Promise.resolve(subscription) },
+    };
+    Object.defineProperty(navigator, "serviceWorker", {
+      value: {
+        register: () => Promise.resolve(registration),
+        ready: Promise.resolve(registration),
+      },
+    });
+    Object.defineProperty(window, "PushManager", { value: function () {} });
+    Object.defineProperty(window, "Notification", {
+      value: { requestPermission: () => Promise.resolve("granted") },
+    });
+  });
+  await page.route("**/api/session", (route) =>
+    route.fulfill({ json: { identity: { role: "parent", id: "parent" } } }),
+  );
+  let release!: () => void;
+  const gate = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const methods: string[] = [];
+  await page.route("**/api/parents/push-subscription", async (route) => {
+    methods.push(route.request().method());
+    // Hold the first re-registration while the user leaves and returns.
+    if (methods.length === 1) await gate;
+    await route.fulfill({ json: { ok: true } });
+  });
+  await page.goto("/settings/notifications");
+  await expect.poll(() => methods.length).toBe(1);
+  await page.getByRole("link", { name: "設定へ戻る" }).click();
+  await page.getByRole("link", { name: /通知設定/ }).click();
+  // The new page waits for the stale PUT instead of offering to unsubscribe early.
+  await expect(page.getByRole("button", { name: "確認中…" })).toBeDisabled();
+  release();
+  await page.getByRole("button", { name: "通知を無効にする" }).click();
+  await expect(page.getByRole("status")).toHaveText("通知を無効にしました");
+  expect(methods.at(-1)).toBe("DELETE");
+  expect(methods.slice(0, -1).every((method) => method === "PUT")).toBe(true);
+});
+
 test("PWA metadata refreshes online and falls back to cache offline", async ({ page, context }) => {
   await page.goto("/");
   await page.evaluate(async () => {
