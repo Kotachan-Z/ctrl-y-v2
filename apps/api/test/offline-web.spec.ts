@@ -364,20 +364,34 @@ describe("offline status queue", () => {
   });
 });
 
+const authorizationHash = async (token: string) =>
+  Array.from(
+    new Uint8Array(
+      await crypto.subtle.digest("SHA-256", new TextEncoder().encode(`Bearer ${token}`)),
+    ),
+    (byte) => byte.toString(16).padStart(2, "0"),
+  ).join("");
+
 describe("service worker API cache", () => {
   function worker() {
     const responses = new Map<string, Response>();
     const fetchMock = vi.fn<typeof fetch>();
     const handlers = new Map<
       string,
-      (event: { request: Request; respondWith: (response: Promise<Response>) => void }) => void
+      (
+        event:
+          | { request: Request; respondWith: (response: Promise<Response>) => void }
+          | { data: unknown; waitUntil: (promise: Promise<unknown>) => void },
+      ) => void
     >();
     const cache = {
       match: async (key: string) => responses.get(key)?.clone(),
       put: async (key: string, response: Response) => {
         responses.set(key, response);
       },
-      delete: async (key: string) => responses.delete(key),
+      delete: async (key: string | Request) =>
+        responses.delete(typeof key === "string" ? key : key.url),
+      keys: async () => [...responses.keys()].map((key) => new Request(key)),
     };
     runInNewContext(readFileSync(new URL("../../web/public/sw.js", import.meta.url), "utf8"), {
       self: {
@@ -408,8 +422,41 @@ describe("service worker API cache", () => {
       });
       return result;
     };
-    return { fetchMock, request, responses, cache };
+    const message = async (data: unknown) => {
+      const pending: Promise<unknown>[] = [];
+      handlers.get("message")!({
+        data,
+        waitUntil: (promise: Promise<unknown>) => pending.push(promise),
+      });
+      await Promise.all(pending);
+    };
+    return { fetchMock, request, message, responses, cache };
   }
+  it("prunes cached API data for credentials the pages no longer hold", async () => {
+    const { fetchMock, request, message, responses } = worker();
+    fetchMock.mockImplementation(async () => Response.json({ ok: true }));
+    for (const token of ["parent", "child", "expired"]) {
+      await request("/api/tasks", token);
+      await request("/api/session", token);
+    }
+    expect(responses.size).toBe(6);
+    for (const data of [
+      undefined,
+      { type: "other", keep: [] },
+      { type: "ctrl-y-prune-api-cache" },
+      { type: "ctrl-y-prune-api-cache", keep: ["not-a-hash"] },
+    ])
+      await message(data);
+    expect(responses.size).toBe(6);
+    const keep = [await authorizationHash("parent"), await authorizationHash("child")];
+    await message({ type: "ctrl-y-prune-api-cache", keep });
+    expect(responses.size).toBe(4);
+    expect([...responses.keys()].every((key) => keep.some((h) => key.includes(`/${h}/`)))).toBe(
+      true,
+    );
+    await message({ type: "ctrl-y-prune-api-cache", keep: [] });
+    expect(responses.size).toBe(0);
+  });
   it.each([
     "/api/tasks",
     "/api/tasks?status=TODO",

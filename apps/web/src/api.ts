@@ -18,6 +18,7 @@ export const tokens = {
     localStorage.setItem(keys[role], token);
     localStorage.setItem(refreshKeys[role], refreshToken);
     if (isNewSession) localStorage.setItem(sessionKeys[role], crypto.randomUUID());
+    void syncOfflineApiCache();
   },
   remove: async (role: Role): Promise<void> => {
     const token = tokens.get(role);
@@ -36,8 +37,32 @@ export const tokens = {
       if (entry.sessionId === sessionId) localStorage.removeItem(queuePrefix + entry.id);
     }
     notifyOffline();
+    void syncOfflineApiCache();
   },
 };
+// Tell the service worker which credentials are still stored; it drops cached API data
+// for any other (refreshed or logged-out) token. Hashes match sw.js's cache keys.
+export async function syncOfflineApiCache() {
+  try {
+    const worker = navigator.serviceWorker?.controller;
+    if (!worker) return;
+    const keep = await Promise.all(
+      (["parent", "child"] as const).flatMap((role) => {
+        const token = tokens.get(role);
+        return token ? [authorizationHash(token)] : [];
+      }),
+    );
+    // ServiceWorker#postMessage has no targetOrigin; the worker is same-origin by definition.
+    // oxlint-disable-next-line unicorn/require-post-message-target-origin
+    worker.postMessage({ type: "ctrl-y-prune-api-cache", keep });
+  } catch {
+    // Pruning is best-effort.
+  }
+}
+async function authorizationHash(token: string) {
+  const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(`Bearer ${token}`));
+  return Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, "0")).join("");
+}
 // Unverified claims are only a retry guard; the server still authenticates every request.
 function tokenOwner(token: string | null): Identity | undefined {
   try {
@@ -381,6 +406,7 @@ export function startOfflineReplay() {
   };
   document.addEventListener("visibilitychange", visible);
   retry();
+  void syncOfflineApiCache();
   return () => {
     window.removeEventListener("online", retry);
     document.removeEventListener("visibilitychange", visible);

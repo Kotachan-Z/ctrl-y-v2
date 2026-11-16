@@ -148,6 +148,29 @@ self.addEventListener("fetch", (event) => {
     })(),
   );
 });
+// Pages send the credential hashes still in use; cached API data for any other
+// credential (refreshed or logged out) is unreachable, so drop it.
+async function pruneApiCache(keep) {
+  try {
+    const cache = await caches.open(API_CACHE);
+    for (const request of await cache.keys()) {
+      const [, namespace, hash] = new URL(request.url).pathname.split("/");
+      if (namespace === "__offline_api" && !keep.has(hash)) await cache.delete(request);
+    }
+  } catch {
+    // Pruning is best-effort; the next message retries it.
+  }
+}
+self.addEventListener("message", (event) => {
+  const { data } = event;
+  if (
+    data?.type !== "ctrl-y-prune-api-cache" ||
+    !Array.isArray(data.keep) ||
+    !data.keep.every((hash) => typeof hash === "string" && /^[0-9a-f]{64}$/.test(hash))
+  )
+    return;
+  event.waitUntil(pruneApiCache(new Set(data.keep)));
+});
 self.addEventListener("push", (event) => {
   let payload;
   try {
