@@ -186,6 +186,8 @@ async function pruneApiCache() {
       if (!knownHashes.has(hash)) {
         const cachedAt = Number((await cache.match(request))?.headers.get("X-Ctrl-Y-Cached-At"));
         if (Date.now() - cachedAt < UNREPORTED_GRACE_MS) continue;
+        // A report that arrived during the lookup may have made this hash current.
+        if (activeHashes.has(hash)) continue;
       }
       await cache.delete(request);
     }

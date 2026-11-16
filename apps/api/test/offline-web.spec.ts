@@ -513,6 +513,28 @@ describe("service worker API cache", () => {
     expect(responses.size).toBe(0);
     vi.restoreAllMocks();
   });
+  it("keeps an old unreported entry that a report made current during the prune", async () => {
+    const { fetchMock, request, message, responses, cache } = worker();
+    fetchMock.mockImplementation(async () => Response.json({ ok: true }));
+    // Cached before a worker restart: unknown to this worker and past the grace period.
+    await request("/api/tasks", "child");
+    const now = Date.now();
+    vi.spyOn(Date, "now").mockReturnValue(now + 61_000);
+    const match = cache.match;
+    let report!: Promise<void>;
+    cache.match = async (key) => {
+      // The child's tab reports its token while this prune looks the entry up.
+      report = message({
+        type: "ctrl-y-prune-api-cache",
+        keep: [await authorizationHash("child")],
+      });
+      return match(key);
+    };
+    await message({ type: "ctrl-y-prune-api-cache", keep: [] });
+    await report;
+    expect(responses.size).toBe(1);
+    vi.restoreAllMocks();
+  });
   it("does not re-cache a retired credential's in-flight response", async () => {
     const { fetchMock, request, message, responses } = worker();
     fetchMock.mockImplementation(async () => Response.json({ ok: true }));
