@@ -28,7 +28,7 @@ Worker・CIのbundle検証・デプロイworkflow（mainへのpushで自動実�
 
 `wrangler.toml` には `[[ratelimits]]` として `name = "AUTH_RATE_LIMITER"`、
 `namespace_id = "1001"`、`simple = { limit = 60, period = 60 }` を設定済みです。
-現在のWrangler 4.142.0で対応する専用セクションを使用し、`unsafe.bindings` は不要です。
+Wrangler 4.142.0 以降（現在の指定は `^4.162.0`）で対応する専用セクションを使用し、`unsafe.bindings` は不要です。
 
 デプロイ前に、次を確認してください（本プロジェクトはWorkers Paid前提）。
 
