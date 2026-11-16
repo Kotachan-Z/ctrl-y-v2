@@ -63,7 +63,8 @@ jobs:
   playwright:
     permissions:
       contents: read
-    runs-on: ubuntu-latest
+    # Playwright 1.58 cannot install browser dependencies on ubuntu-latest (26.04).
+    runs-on: ubuntu-24.04
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v7
