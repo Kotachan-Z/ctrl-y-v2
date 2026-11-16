@@ -18,6 +18,12 @@ const jwt = (role: Role = "child", id: string = role, version = "old", parentId 
 const childToken = jwt();
 
 // Exercise the browser client with the existing Vitest runner; no DOM rendering is needed.
+const change = () =>
+  api<{ queued?: boolean }>("/tasks/task-id/status", {
+    role: "child",
+    method: "PATCH",
+    body: { status: "WAIT_REVIEW" },
+  });
 describe("offline status queue", () => {
   const fetchMock = vi.fn<typeof fetch>();
   beforeEach(() => {
@@ -39,12 +45,6 @@ describe("offline status queue", () => {
     tokens.set("child", childToken, "refresh-child");
   });
   afterEach(() => vi.unstubAllGlobals());
-  const change = () =>
-    api<{ queued?: boolean }>("/tasks/task-id/status", {
-      role: "child",
-      method: "PATCH",
-      body: { status: "WAIT_REVIEW" },
-    });
   it("mints a fresh random session id for every login, including the same account", () => {
     const sessionId = tokens.getSessionId("child");
     expect(sessionId).toMatch(/^[0-9a-f-]{36}$/);
@@ -403,69 +403,69 @@ describe("offline API cache sync", () => {
   });
 });
 
-describe("service worker API cache", () => {
-  function worker() {
-    const responses = new Map<string, Response>();
-    const fetchMock = vi.fn<typeof fetch>();
-    const handlers = new Map<
-      string,
-      (
-        event:
-          | { request: Request; respondWith: (response: Promise<Response>) => void }
-          | { data: unknown; waitUntil: (promise: Promise<unknown>) => void },
-      ) => void
-    >();
-    const cache = {
-      match: async (key: string | Request) =>
-        responses.get(typeof key === "string" ? key : key.url)?.clone(),
-      put: async (key: string, response: Response) => {
-        responses.set(key, response);
+function worker() {
+  const responses = new Map<string, Response>();
+  const fetchMock = vi.fn<typeof fetch>();
+  const handlers = new Map<
+    string,
+    (
+      event:
+        | { request: Request; respondWith: (response: Promise<Response>) => void }
+        | { data: unknown; waitUntil: (promise: Promise<unknown>) => void },
+    ) => void
+  >();
+  const cache = {
+    match: async (key: string | Request) =>
+      responses.get(typeof key === "string" ? key : key.url)?.clone(),
+    put: async (key: string, response: Response) => {
+      responses.set(key, response);
+    },
+    delete: async (key: string | Request) =>
+      responses.delete(typeof key === "string" ? key : key.url),
+    keys: async () => [...responses.keys()].map((key) => new Request(key)),
+  };
+  runInNewContext(readFileSync(new URL("../../web/public/sw.js", import.meta.url), "utf8"), {
+    self: {
+      location: { origin: "https://app.test" },
+      addEventListener: (
+        name: string,
+        handler: typeof handlers extends Map<string, infer H> ? H : never,
+      ) => handlers.set(name, handler),
+    },
+    caches: { open: async () => cache },
+    fetch: fetchMock,
+    crypto,
+    TextEncoder,
+    URL,
+    Response,
+    Headers,
+    // Share the host Date so tests can control the worker's clock.
+    Date,
+  });
+  const request = (path: string, token = "parent", method = "GET") => {
+    let result: Promise<Response> | undefined;
+    handlers.get("fetch")!({
+      request: new Request(`https://app.test${path}`, {
+        method,
+        headers: { Authorization: `Bearer ${token}` },
+      }),
+      respondWith: (response) => {
+        result = response;
       },
-      delete: async (key: string | Request) =>
-        responses.delete(typeof key === "string" ? key : key.url),
-      keys: async () => [...responses.keys()].map((key) => new Request(key)),
-    };
-    runInNewContext(readFileSync(new URL("../../web/public/sw.js", import.meta.url), "utf8"), {
-      self: {
-        location: { origin: "https://app.test" },
-        addEventListener: (
-          name: string,
-          handler: typeof handlers extends Map<string, infer H> ? H : never,
-        ) => handlers.set(name, handler),
-      },
-      caches: { open: async () => cache },
-      fetch: fetchMock,
-      crypto,
-      TextEncoder,
-      URL,
-      Response,
-      Headers,
-      // Share the host Date so tests can control the worker's clock.
-      Date,
     });
-    const request = (path: string, token = "parent", method = "GET") => {
-      let result: Promise<Response> | undefined;
-      handlers.get("fetch")!({
-        request: new Request(`https://app.test${path}`, {
-          method,
-          headers: { Authorization: `Bearer ${token}` },
-        }),
-        respondWith: (response) => {
-          result = response;
-        },
-      });
-      return result;
-    };
-    const message = async (data: unknown) => {
-      const pending: Promise<unknown>[] = [];
-      handlers.get("message")!({
-        data,
-        waitUntil: (promise: Promise<unknown>) => pending.push(promise),
-      });
-      await Promise.all(pending);
-    };
-    return { fetchMock, request, message, responses, cache };
-  }
+    return result;
+  };
+  const message = async (data: unknown) => {
+    const pending: Promise<unknown>[] = [];
+    handlers.get("message")!({
+      data,
+      waitUntil: (promise: Promise<unknown>) => pending.push(promise),
+    });
+    await Promise.all(pending);
+  };
+  return { fetchMock, request, message, responses, cache };
+}
+describe("service worker API cache", () => {
   it("prunes cached API data for credentials the pages no longer hold", async () => {
     const { fetchMock, request, message, responses } = worker();
     fetchMock.mockImplementation(async () => Response.json({ ok: true }));

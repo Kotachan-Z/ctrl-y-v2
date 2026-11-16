@@ -30,6 +30,8 @@ for (const trigger of ["reconnect", "refresh"] as const) {
     });
     await expect.poll(() => page.evaluate(() => !!navigator.serviceWorker.controller)).toBe(true);
     const task = page.getByRole("article", { name: "オフラインのお手伝い" });
+    // Let the online task list load before going offline.
+    await expect(task.getByRole("button", { name: "はじめる" })).toBeEnabled();
     await context.setOffline(true);
     await task.getByRole("button", { name: "はじめる" }).click();
     await expect(page.getByRole("alert")).toBeVisible();

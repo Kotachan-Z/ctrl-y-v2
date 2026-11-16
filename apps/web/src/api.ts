@@ -112,6 +112,21 @@ const sessionLock = async <T>(role: Role, action: () => Promise<T>): Promise<T> 
   typeof navigator !== "undefined" && navigator.locks
     ? await navigator.locks.request(`ctrl-y.session.${role}`, action)
     : action();
+// Serializes push subscription writes (settings page, logout) across mounts and tabs so a stale
+// re-registration cannot land after an unsubscribe. Always taken before the session lock.
+export const pushSubscriptionLock = async <T>(
+  action: () => Promise<T>,
+  signal?: AbortSignal,
+): Promise<T> =>
+  typeof navigator !== "undefined" && navigator.locks
+    ? await navigator.locks.request("ctrl-y.push-subscription", signal ? { signal } : {}, action)
+    : action();
+// Bumped (inside the lock) whenever a user action changes this browser's subscription, so an
+// action that waited on the lock can tell that another tab acted after it was clicked.
+const pushGenerationKey = "ctrl-y.push-generation";
+export const pushGeneration = () => localStorage.getItem(pushGenerationKey);
+export const bumpPushGeneration = () =>
+  localStorage.setItem(pushGenerationKey, crypto.randomUUID());
 async function refreshSession(
   role: Role,
   failedToken: string | null,
@@ -155,35 +170,49 @@ async function refreshSession(
 }
 export async function logout(role: Role) {
   await refreshing[role];
-  await sessionLock(role, async () => {
-    const refreshToken = tokens.getRefresh(role);
-    if (role === "parent" && "serviceWorker" in navigator) {
-      try {
-        const registration = await navigator.serviceWorker.getRegistration();
-        const subscription = await registration?.pushManager.getSubscription();
-        if (subscription) {
-          try {
-            // Avoid refresh re-entering the session lock held by logout.
-            await fetch("/api/parents/push-subscription", {
-              method: "DELETE",
-              headers: {
-                "Content-Type": "application/json",
-                Authorization: `Bearer ${tokens.get(role)}`,
-              },
-              body: JSON.stringify({ endpoint: subscription.endpoint }),
-              signal: AbortSignal.timeout(5000),
-            });
-          } finally {
-            await subscription.unsubscribe();
+  const run = (cleanUpPush: boolean) =>
+    sessionLock(role, async () => {
+      const refreshToken = tokens.getRefresh(role);
+      if (cleanUpPush && "serviceWorker" in navigator) {
+        try {
+          const registration = await navigator.serviceWorker.getRegistration();
+          const subscription = await registration?.pushManager.getSubscription();
+          if (subscription) {
+            try {
+              // Avoid refresh re-entering the session lock held by logout.
+              await fetch("/api/parents/push-subscription", {
+                method: "DELETE",
+                headers: {
+                  "Content-Type": "application/json",
+                  Authorization: `Bearer ${tokens.get(role)}`,
+                },
+                body: JSON.stringify({ endpoint: subscription.endpoint }),
+                signal: AbortSignal.timeout(5000),
+              });
+            } finally {
+              await subscription.unsubscribe();
+            }
           }
+        } catch {
+          // Push cleanup is best-effort and must not prevent logout.
         }
-      } catch {
-        // Push cleanup is best-effort and must not prevent logout.
       }
-    }
-    if (refreshToken) await api("/auth/logout", { body: { refreshToken } });
-    if (tokens.getRefresh(role) === refreshToken) await tokens.remove(role);
-  });
+      if (refreshToken) await api("/auth/logout", { body: { refreshToken } });
+      if (tokens.getRefresh(role) === refreshToken) await tokens.remove(role);
+    });
+  if (role !== "parent") return run(false);
+  try {
+    // A stuck subscription operation must not keep the parent logged in.
+    await pushSubscriptionLock(async () => {
+      bumpPushGeneration();
+      await run(true);
+    }, AbortSignal.timeout(10_000));
+  } catch (error) {
+    if (!(error instanceof DOMException && error.name === "TimeoutError")) throw error;
+    // Still invalidate subscription actions that are waiting, as a completed logout would.
+    bumpPushGeneration();
+    await run(false);
+  }
 }
 export class ApiError extends Error {
   constructor(
@@ -356,61 +385,62 @@ async function sendWithRefresh(
   return response;
 }
 let replay: Promise<void> | undefined;
+async function drainOfflineOperations() {
+  for (const entry of await pendingOperations()) {
+    // Discard operations saved by older versions that queued other transitions.
+    if (!isCompletionReport(entry.role, entry.body)) {
+      localStorage.removeItem(queuePrefix + entry.id);
+      notifyOffline("完了報告以外の古い送信待ち操作を破棄しました");
+      continue;
+    }
+    // Recheck after each await: logout/account switching can happen during replay.
+    const token = tokens.get(entry.role);
+    if (
+      tokens.getSessionId(entry.role) !== entry.sessionId ||
+      !localStorage.getItem(queuePrefix + entry.id)
+    )
+      continue;
+    let response;
+    try {
+      response = await sendWithRefresh(entry.path, "PATCH", token, entry.body, entry.role, true);
+      if (response.status === 401 || tokens.getSessionId(entry.role) !== entry.sessionId) break;
+    } catch (error) {
+      if (!(error instanceof TypeError) && !(error instanceof ApiError)) throw error;
+      break;
+    }
+    localStorage.removeItem(queuePrefix + entry.id);
+    notifyOffline(
+      response.ok
+        ? "送信待ちの操作を送信しました"
+        : `送信待ちの操作に失敗しました（HTTP ${response.status}）。タスクの状態を確認してください。`,
+    );
+    window.dispatchEvent(new Event(syncEvent));
+  }
+}
 export function replayOfflineOperations(): Promise<void> {
   if (replay) return replay;
-  async function drain() {
-    for (const entry of await pendingOperations()) {
-      // Discard operations saved by older versions that queued other transitions.
-      if (!isCompletionReport(entry.role, entry.body)) {
-        localStorage.removeItem(queuePrefix + entry.id);
-        notifyOffline("完了報告以外の古い送信待ち操作を破棄しました");
-        continue;
-      }
-      // Recheck after each await: logout/account switching can happen during replay.
-      const token = tokens.get(entry.role);
-      if (
-        tokens.getSessionId(entry.role) !== entry.sessionId ||
-        !localStorage.getItem(queuePrefix + entry.id)
-      )
-        continue;
-      let response;
-      try {
-        response = await sendWithRefresh(entry.path, "PATCH", token, entry.body, entry.role, true);
-        if (response.status === 401 || tokens.getSessionId(entry.role) !== entry.sessionId) break;
-      } catch (error) {
-        if (!(error instanceof TypeError) && !(error instanceof ApiError)) throw error;
-        break;
-      }
-      localStorage.removeItem(queuePrefix + entry.id);
-      notifyOffline(
-        response.ok
-          ? "送信待ちの操作を送信しました"
-          : `送信待ちの操作に失敗しました（HTTP ${response.status}）。タスクの状態を確認してください。`,
-      );
-      window.dispatchEvent(new Event(syncEvent));
-    }
-  }
   // Serialize replay across tabs where Web Locks is available; no Background Sync dependency.
   replay = (async () => {
-    if (navigator.locks) await navigator.locks.request("ctrl-y-offline-replay", drain);
-    else await drain();
+    if (navigator.locks)
+      await navigator.locks.request("ctrl-y-offline-replay", drainOfflineOperations);
+    else await drainOfflineOperations();
   })().finally(() => {
     replay = undefined;
   });
   return replay;
 }
+function retryOfflineReplay() {
+  void replayOfflineOperations().catch(() =>
+    notifyOffline("送信待ちの操作を処理できませんでした。再度アプリを開いてください。"),
+  );
+}
+function retryWhenVisible() {
+  if (document.visibilityState === "visible") retryOfflineReplay();
+}
 export function startOfflineReplay() {
-  const retry = () => {
-    void replayOfflineOperations().catch(() =>
-      notifyOffline("送信待ちの操作を処理できませんでした。再度アプリを開いてください。"),
-    );
-  };
-  window.addEventListener("online", retry);
-  const visible = () => {
-    if (document.visibilityState === "visible") retry();
-  };
-  document.addEventListener("visibilitychange", visible);
-  retry();
+  window.addEventListener("online", retryOfflineReplay);
+  document.addEventListener("visibilitychange", retryWhenVisible);
+  retryOfflineReplay();
   void syncOfflineApiCache();
   // The first load is not controlled yet, and an updated worker takes over later. Startup must
   // not fail where the container is missing or partial (unsupported browsers, test doubles).
@@ -418,7 +448,7 @@ export function startOfflineReplay() {
   container?.addEventListener?.("controllerchange", syncOfflineApiCache);
   return () => {
     container?.removeEventListener?.("controllerchange", syncOfflineApiCache);
-    window.removeEventListener("online", retry);
-    document.removeEventListener("visibilitychange", visible);
+    window.removeEventListener("online", retryOfflineReplay);
+    document.removeEventListener("visibilitychange", retryWhenVisible);
   };
 }
