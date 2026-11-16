@@ -49,6 +49,7 @@ function bindings() {
     HYPERDRIVE: {
       connectionString: "postgres://test:test@localhost/test",
       host: "localhost",
+      ip: "127.0.0.1",
       port: 5432,
       user: "test",
       password: "test",
@@ -63,7 +64,22 @@ function context() {
   const pending: Promise<unknown>[] = [];
   class NoopSpan implements Span {
     readonly isTraced = false;
-    setAttribute() {}
+    spanContext() {
+      return { traceId: "", spanId: "", traceFlags: 0 };
+    }
+    setAttribute() {
+      return this;
+    }
+    setAttributes() {
+      return this;
+    }
+    recordException() {}
+    updateName() {
+      return this;
+    }
+    setStatus() {
+      return this;
+    }
     end() {}
   }
   const enterSpan: Tracing["enterSpan"] = (_name, callback, ...args) =>
@@ -74,7 +90,19 @@ function context() {
       waitUntil: (task: Promise<unknown>) => pending.push(task),
       passThroughOnException: () => {},
       props: {},
-      tracing: { enterSpan, startActiveSpan: enterSpan, Span: NoopSpan },
+      exports: {},
+      mapVirtualHost: () => {
+        throw new Error("Unexpected virtual host mapping");
+      },
+      abort: () => {},
+      tracing: {
+        enterSpan,
+        startActiveSpan: enterSpan,
+        startSpan: () => new NoopSpan(),
+        getActiveSpan: () => undefined,
+        withActiveSpan: (_span, callback, ...args) => callback(...args),
+        Span: NoopSpan,
+      },
     } satisfies ExecutionContext,
   };
 }

@@ -41,19 +41,19 @@ export function registerParentRoutes(app: Hono<AuthEnv>, deps: RouteDeps): void 
   app.post("/api/parents/password-reset/request", async (c) => {
     const data = await body(c.req.raw);
     const { email } = credentials({ email: data.email, password: "validation-only" });
+    const delivery = async () => {
+      try {
+        const parent = await repo().parentByEmail(email);
+        if (!parent) return;
+        const { token, expiresAt } = await issueResetToken(parent.id, jwtSecret);
+        await sendResetEmail(email, token, resetMail);
+        await repo().savePasswordReset(parent.id, await tokenDigest(token), expiresAt);
+      } catch {
+        // Do not disclose account existence or log tokens/provider response bodies.
+        console.error("Password reset delivery failed");
+      }
+    };
     return resetLimit(`reset-request:${email}`, async () => {
-      const delivery = async () => {
-        try {
-          const parent = await repo().parentByEmail(email);
-          if (!parent) return;
-          const { token, expiresAt } = await issueResetToken(parent.id, jwtSecret);
-          await sendResetEmail(email, token, resetMail);
-          await repo().savePasswordReset(parent.id, await tokenDigest(token), expiresAt);
-        } catch {
-          // Do not disclose account existence or log tokens/provider response bodies.
-          console.error("Password reset delivery failed");
-        }
-      };
       const pending = delivery();
       if (backgroundTask) backgroundTask(pending);
       else await pending;
