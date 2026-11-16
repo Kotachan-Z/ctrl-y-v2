@@ -57,7 +57,10 @@ await test("push migration copies legacy subscriptions, preserves old columns an
     );
     assert.deepEqual(old.rows, [{ push_subscription: subscription }]);
     const queue = await client.query("SELECT subscription_id FROM push_retry_queue");
-    assert.deepEqual(queue.rows, Array(7).fill({ subscription_id: null }));
+    assert.deepEqual(
+      queue.rows,
+      Array.from({ length: 7 }, () => ({ subscription_id: null })),
+    );
   } finally {
     await client.close();
   }

@@ -64,6 +64,7 @@ mise run dev
 
 - 開発用ログイン: `parent@example.test` / `local-password`、子供のあいことば `ひみつのことば`
 - `mise run dev` は起動のたびにローカル DB（`.pglite/`）を作り直します。データを残すなら `bun run dev`
+- PGlite 0.5（PostgreSQL 18）は、それより前の版で作ったローカル DB（`.pglite/`、`PGLITE_PATH`）を開けません。開こうとするとエラーで止まります。既定の `.pglite/` は `mise run dev` で作り直せます。`PGLITE_PATH` で別の場所を指定している場合は、そのディレクトリを削除してから migration と seed をやり直してください。データを残す場合は [PGlite の移行手順](https://pglite.dev/docs/upgrade) に従います
 - Web の `/api/*` は Vite の proxy 経由で API に届きます
 - ポート 3000 が使用中なら `API_PORT=3300 bun run dev`
 

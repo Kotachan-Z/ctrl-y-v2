@@ -326,63 +326,64 @@ async function sendWithRefresh(
   return response;
 }
 let replay: Promise<void> | undefined;
+async function drainOfflineOperations() {
+  for (const entry of await pendingOperations()) {
+    // Discard operations saved by older versions that queued other transitions.
+    if (!isCompletionReport(entry.role, entry.body)) {
+      localStorage.removeItem(queuePrefix + entry.id);
+      notifyOffline("完了報告以外の古い送信待ち操作を破棄しました");
+      continue;
+    }
+    // Recheck after each await: logout/account switching can happen during replay.
+    const token = tokens.get(entry.role);
+    if (
+      tokens.getSessionId(entry.role) !== entry.sessionId ||
+      !localStorage.getItem(queuePrefix + entry.id)
+    )
+      continue;
+    let response;
+    try {
+      response = await sendWithRefresh(entry.path, "PATCH", token, entry.body, entry.role, true);
+      if (response.status === 401 || tokens.getSessionId(entry.role) !== entry.sessionId) break;
+    } catch (error) {
+      if (!(error instanceof TypeError) && !(error instanceof ApiError)) throw error;
+      break;
+    }
+    localStorage.removeItem(queuePrefix + entry.id);
+    notifyOffline(
+      response.ok
+        ? "送信待ちの操作を送信しました"
+        : `送信待ちの操作に失敗しました（HTTP ${response.status}）。タスクの状態を確認してください。`,
+    );
+    window.dispatchEvent(new Event(syncEvent));
+  }
+}
 export function replayOfflineOperations(): Promise<void> {
   if (replay) return replay;
-  async function drain() {
-    for (const entry of await pendingOperations()) {
-      // Discard operations saved by older versions that queued other transitions.
-      if (!isCompletionReport(entry.role, entry.body)) {
-        localStorage.removeItem(queuePrefix + entry.id);
-        notifyOffline("完了報告以外の古い送信待ち操作を破棄しました");
-        continue;
-      }
-      // Recheck after each await: logout/account switching can happen during replay.
-      const token = tokens.get(entry.role);
-      if (
-        tokens.getSessionId(entry.role) !== entry.sessionId ||
-        !localStorage.getItem(queuePrefix + entry.id)
-      )
-        continue;
-      let response;
-      try {
-        response = await sendWithRefresh(entry.path, "PATCH", token, entry.body, entry.role, true);
-        if (response.status === 401 || tokens.getSessionId(entry.role) !== entry.sessionId) break;
-      } catch (error) {
-        if (!(error instanceof TypeError) && !(error instanceof ApiError)) throw error;
-        break;
-      }
-      localStorage.removeItem(queuePrefix + entry.id);
-      notifyOffline(
-        response.ok
-          ? "送信待ちの操作を送信しました"
-          : `送信待ちの操作に失敗しました（HTTP ${response.status}）。タスクの状態を確認してください。`,
-      );
-      window.dispatchEvent(new Event(syncEvent));
-    }
-  }
   // Serialize replay across tabs where Web Locks is available; no Background Sync dependency.
   replay = (async () => {
-    if (navigator.locks) await navigator.locks.request("ctrl-y-offline-replay", drain);
-    else await drain();
+    if (navigator.locks)
+      await navigator.locks.request("ctrl-y-offline-replay", drainOfflineOperations);
+    else await drainOfflineOperations();
   })().finally(() => {
     replay = undefined;
   });
   return replay;
 }
+function retryOfflineReplay() {
+  void replayOfflineOperations().catch(() =>
+    notifyOffline("送信待ちの操作を処理できませんでした。再度アプリを開いてください。"),
+  );
+}
+function retryWhenVisible() {
+  if (document.visibilityState === "visible") retryOfflineReplay();
+}
 export function startOfflineReplay() {
-  const retry = () => {
-    void replayOfflineOperations().catch(() =>
-      notifyOffline("送信待ちの操作を処理できませんでした。再度アプリを開いてください。"),
-    );
-  };
-  window.addEventListener("online", retry);
-  const visible = () => {
-    if (document.visibilityState === "visible") retry();
-  };
-  document.addEventListener("visibilitychange", visible);
-  retry();
+  window.addEventListener("online", retryOfflineReplay);
+  document.addEventListener("visibilitychange", retryWhenVisible);
+  retryOfflineReplay();
   return () => {
-    window.removeEventListener("online", retry);
-    document.removeEventListener("visibilitychange", visible);
+    window.removeEventListener("online", retryOfflineReplay);
+    document.removeEventListener("visibilitychange", retryWhenVisible);
   };
 }
