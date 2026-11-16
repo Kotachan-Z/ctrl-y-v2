@@ -1,5 +1,5 @@
 import { children, parents, payroll, tasks } from "@ctrl-y/database";
-import { and, count, eq, gte, lt, sql } from "drizzle-orm";
+import { and, count, eq, gte, inArray, isNotNull, lt, sql } from "drizzle-orm";
 import type { PgDatabase, PgQueryResultHKT } from "drizzle-orm/pg-core";
 
 import type { PayrollSettings } from "./types.js";
@@ -126,28 +126,59 @@ export function createPayrollRepository<
           .where(eq(parents.id, parentId))
           .returning({ payDay: parents.payDay, cutoffDay: parents.cutoffDay });
         if (settings.cutoffDay !== parent.cutoffDay) {
-          const family = await tx
-            .select()
+          await tx
+            .select({ id: children.id })
             .from(children)
             .where(eq(children.parentId, parentId))
             .orderBy(children.id)
             .for("no key update");
-          for (const child of family) {
-            const oldRows = await tx
-              .select({ month: payroll.month })
-              .from(payroll)
-              .where(eq(payroll.childId, child.id));
-            const completed = await tx
-              .select({ completedAt: tasks.completedAt })
-              .from(tasks)
-              .where(and(eq(tasks.childId, child.id), eq(tasks.status, "DONE")));
-            const months = new Set(oldRows.map((row) => row.month));
-            for (const task of completed) {
-              if (task.completedAt) months.add(payrollMonth(task.completedAt, settings.cutoffDay));
-            }
-            for (const month of months)
-              await recalculatePayroll(tx, child.id, month, settings.cutoffDay);
-          }
+          // Rebuild the family in two statements; the month rule mirrors payrollMonth().
+          await tx
+            .update(payroll)
+            .set({ completedTaskCount: 0, totalReward: 0 })
+            .where(
+              inArray(
+                payroll.childId,
+                tx
+                  .select({ id: children.id })
+                  .from(children)
+                  .where(eq(children.parentId, parentId)),
+              ),
+            );
+          const local = sql`${tasks.completedAt} at time zone 'Asia/Tokyo'`;
+          const month = settings.cutoffDay
+            ? sql<string>`(date_trunc('month', ${local}) + case when extract(day from ${local}) > 15 then interval '1 month' else interval '0 months' end)::date`
+            : sql<string>`date_trunc('month', ${local})::date`;
+          await tx
+            .insert(payroll)
+            .select(
+              tx
+                .select({
+                  id: sql`gen_random_uuid()`.as("id"),
+                  childId: sql`${tasks.childId}`.as("child_id"),
+                  month: month.as("month"),
+                  completedTaskCount: sql`count(*)::integer`.as("completed_task_count"),
+                  totalReward: sql`sum(${tasks.reward})::integer`.as("total_reward"),
+                  createdAt: sql`now()`.as("created_at"),
+                })
+                .from(tasks)
+                .where(
+                  and(
+                    eq(tasks.parentId, parentId),
+                    eq(tasks.status, "DONE"),
+                    isNotNull(tasks.childId),
+                    isNotNull(tasks.completedAt),
+                  ),
+                )
+                .groupBy(tasks.childId, month),
+            )
+            .onConflictDoUpdate({
+              target: [payroll.childId, payroll.month],
+              set: {
+                completedTaskCount: sql`excluded.completed_task_count`,
+                totalReward: sql`excluded.total_reward`,
+              },
+            });
         }
         return settings;
       });
