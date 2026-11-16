@@ -84,10 +84,19 @@ const sessionLock = async <T>(role: Role, action: () => Promise<T>): Promise<T> 
     : action();
 // Serializes push subscription writes (settings page, logout) across mounts and tabs so a stale
 // re-registration cannot land after an unsubscribe. Always taken before the session lock.
-export const pushSubscriptionLock = async <T>(action: () => Promise<T>): Promise<T> =>
+export const pushSubscriptionLock = async <T>(
+  action: () => Promise<T>,
+  signal?: AbortSignal,
+): Promise<T> =>
   typeof navigator !== "undefined" && navigator.locks
-    ? await navigator.locks.request("ctrl-y.push-subscription", action)
+    ? await navigator.locks.request("ctrl-y.push-subscription", signal ? { signal } : {}, action)
     : action();
+// Bumped (inside the lock) whenever a user action changes this browser's subscription, so an
+// action that waited on the lock can tell that another tab acted after it was clicked.
+const pushGenerationKey = "ctrl-y.push-generation";
+export const pushGeneration = () => localStorage.getItem(pushGenerationKey);
+export const bumpPushGeneration = () =>
+  localStorage.setItem(pushGenerationKey, crypto.randomUUID());
 async function refreshSession(
   role: Role,
   failedToken: string | null,
@@ -131,10 +140,10 @@ async function refreshSession(
 }
 export async function logout(role: Role) {
   await refreshing[role];
-  const run = () =>
+  const run = (cleanUpPush: boolean) =>
     sessionLock(role, async () => {
       const refreshToken = tokens.getRefresh(role);
-      if (role === "parent" && "serviceWorker" in navigator) {
+      if (cleanUpPush && "serviceWorker" in navigator) {
         try {
           const registration = await navigator.serviceWorker.getRegistration();
           const subscription = await registration?.pushManager.getSubscription();
@@ -161,7 +170,17 @@ export async function logout(role: Role) {
       if (refreshToken) await api("/auth/logout", { body: { refreshToken } });
       if (tokens.getRefresh(role) === refreshToken) await tokens.remove(role);
     });
-  await (role === "parent" ? pushSubscriptionLock(run) : run());
+  if (role !== "parent") return run(false);
+  try {
+    // A stuck subscription operation must not keep the parent logged in.
+    await pushSubscriptionLock(async () => {
+      bumpPushGeneration();
+      await run(true);
+    }, AbortSignal.timeout(10_000));
+  } catch (error) {
+    if (!(error instanceof DOMException && error.name === "TimeoutError")) throw error;
+    await run(false);
+  }
 }
 export class ApiError extends Error {
   constructor(

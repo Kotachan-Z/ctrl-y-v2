@@ -1,6 +1,6 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
-import { api, ApiError, pushSubscriptionLock } from "../../api";
+import { api, ApiError, bumpPushGeneration, pushGeneration, pushSubscriptionLock } from "../../api";
 import { registerServiceWorker, urlBase64ToUint8Array } from "../../push";
 import { primaryButton, neutralButton, cardClass } from "../../styles/shared";
 
@@ -10,6 +10,13 @@ export default function PushNotifications() {
   const [enabled, setEnabled] = useState(false);
   const [busy, setBusy] = useState(supported);
   const [message, setMessage] = useState(supported ? "" : "この環境では通知を利用できません");
+  const mounted = useRef(true);
+  useEffect(() => {
+    mounted.current = true;
+    return () => {
+      mounted.current = false;
+    };
+  }, []);
   useEffect(() => {
     if (!supported) return;
     let active = true;
@@ -50,6 +57,8 @@ export default function PushNotifications() {
     };
   }, [supported]);
   async function toggle() {
+    // Read synchronously at the click, before any await, to detect later changes elsewhere.
+    const generation = pushGeneration();
     setBusy(true);
     setMessage("");
     try {
@@ -61,6 +70,15 @@ export default function PushNotifications() {
       await pushSubscriptionLock(async () => {
         const registration = await registerServiceWorker();
         const subscription = await registration.pushManager.getSubscription();
+        // The page was left, or another tab (or a logout) changed the subscription while this
+        // click waited for permission or the lock; acting now would undo that newer action.
+        if (!mounted.current) return;
+        if (pushGeneration() !== generation) {
+          setEnabled(subscription !== null);
+          setMessage("別の画面で通知の設定が変わりました。必要ならもう一度操作してください");
+          return;
+        }
+        bumpPushGeneration();
         if (enabled) {
           if (subscription) {
             await api("/parents/push-subscription", {
