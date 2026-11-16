@@ -53,15 +53,15 @@ export function payrollSettingsFields(data: Record<string, unknown>): Partial<Pa
 export function taskStatus(value: unknown): value is TaskStatus {
   return value === "TODO" || value === "IN_PROGRESS" || value === "WAIT_REVIEW" || value === "DONE";
 }
+function failTask(): never {
+  throw new HTTPException(400, { message: "タスクの入力を確認してください" });
+}
 export function taskFields(data: Record<string, unknown>, partial = false): Partial<TaskFields> {
-  const fail = () => {
-    throw new HTTPException(400, { message: "タスクの入力を確認してください" });
-  };
   if (
     !Object.keys(data).length ||
     Object.keys(data).some((key) => !["name", "memo", "reward", "deadline"].includes(key))
   )
-    fail();
+    failTask();
   const result: Partial<TaskFields> = {};
   if (!partial || "name" in data) {
     if (
@@ -70,7 +70,7 @@ export function taskFields(data: Record<string, unknown>, partial = false): Part
       data.name.includes("\u0000") ||
       Array.from(data.name.trim()).length > 100
     )
-      return fail();
+      return failTask();
     result.name = data.name.trim();
   }
   if ("memo" in data) {
@@ -80,7 +80,7 @@ export function taskFields(data: Record<string, unknown>, partial = false): Part
         data.memo.includes("\u0000") ||
         Array.from(data.memo).length > 2000)
     )
-      return fail();
+      return failTask();
     result.memo = data.memo;
   }
   if (!partial || "reward" in data) {
@@ -90,7 +90,7 @@ export function taskFields(data: Record<string, unknown>, partial = false): Part
       data.reward < 0 ||
       data.reward > 1000000
     )
-      return fail();
+      return failTask();
     result.reward = data.reward;
   }
   if (!partial || "deadline" in data) {
@@ -101,9 +101,9 @@ export function taskFields(data: Record<string, unknown>, partial = false): Part
       ) ||
       !Number.isFinite(Date.parse(data.deadline))
     )
-      return fail();
+      return failTask();
     const date = data.deadline.slice(0, 10);
-    if (new Date(date).toISOString().slice(0, 10) !== date) return fail();
+    if (new Date(date).toISOString().slice(0, 10) !== date) return failTask();
     result.deadline = new Date(data.deadline);
   }
   return result;

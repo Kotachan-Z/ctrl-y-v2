@@ -5,7 +5,7 @@ README から移したデータベースと Cloudflare Workers デプロイの�
 ## データベース
 
 ローカルは `.pglite/database`、PostgreSQL dialect、`snake_case`、timestamp prefix の migration を使用。
-`parents` / `children` / `tasks` / `payroll` / `push_retry_queue` / `refresh_tokens` の6テーブルです。
+`parents` / `children` / `tasks` / `payroll` / `push_subscriptions` / `push_retry_queue` / `refresh_tokens` の7テーブルです。
 Phase 1 の migration は再生成済みのため、既存の疎通確認DBは `mise run dev` で初期化してください。
 seed は `parent@example.test` / `local-password`、子供のあいことばは `ひみつのことば` です（開発専用）。
 `PGLITE_PATH` でローカルDBの保存先を差し替えられます。APIとmigrationには同じ絶対パスを渡してください。
@@ -28,7 +28,7 @@ Worker・CIのbundle検証・デプロイworkflow（mainへのpushで自動実�
 
 `wrangler.toml` には `[[ratelimits]]` として `name = "AUTH_RATE_LIMITER"`、
 `namespace_id = "1001"`、`simple = { limit = 60, period = 60 }` を設定済みです。
-現在のWrangler 4.142.0で対応する専用セクションを使用し、`unsafe.bindings` は不要です。
+Wrangler 4.142.0 以降（現在の指定は `^4.162.0`）で対応する専用セクションを使用し、`unsafe.bindings` は不要です。
 
 デプロイ前に、次を確認してください（本プロジェクトはWorkers Paid前提）。
 

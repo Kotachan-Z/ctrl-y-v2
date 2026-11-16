@@ -1,5 +1,6 @@
 import { buildPushPayload } from "@block65/webcrypto-web-push";
 import { children, parents, pushRetryQueue, pushSubscriptions } from "@ctrl-y/database";
+import { eq } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, beforeEach, expect, test, vi } from "vitest";
 
 import { issueToken } from "../src/auth.js";
@@ -626,11 +627,15 @@ test("renewing an old device keeps it when the limit is exceeded", async () => {
   await fixture.db
     .update(pushSubscriptions)
     .set({ createdAt: new Date(0), updatedAt: new Date(0) });
-  for (let i = 0; i < 9; i++)
-    await fixture.repository.setPushSubscription(parentId, {
-      ...subscription,
-      endpoint: subscription.endpoint + "/" + i,
-    });
+  for (let i = 0; i < 9; i++) {
+    const endpoint = subscription.endpoint + "/" + i;
+    await fixture.repository.setPushSubscription(parentId, { ...subscription, endpoint });
+    // Distinct timestamps keep the eviction order deterministic; now() can tie in a fast loop.
+    await fixture.db
+      .update(pushSubscriptions)
+      .set({ createdAt: new Date(1000 * (i + 1)), updatedAt: new Date(1000 * (i + 1)) })
+      .where(eq(pushSubscriptions.endpoint, endpoint));
+  }
   await fixture.repository.setPushSubscription(parentId, subscription);
   await fixture.repository.setPushSubscription(parentId, secondSubscription);
   const values = await fixture.repository.pushSubscriptionsForParent(parentId);
