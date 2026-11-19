@@ -11,6 +11,12 @@ seed は `parent@example.test` / `local-password`、子供のあいことばは 
 `PGLITE_PATH` でローカルDBの保存先を差し替えられます。APIとmigrationには同じ絶対パスを渡してください。
 本番 DB は Supabase PostgreSQL に Hyperdrive + postgres.js + Drizzle で接続します。資格情報の設定は別途必要です。本番 migration はデプロイworkflowで自動適用・検証します。
 
+## 公開URL
+
+- 本番: `https://gohoubi.potechan.link`（Worker のカスタムドメイン。ダッシュボードの Settings → Domains & Routes で設定。`wrangler.toml` には書かないため、デプロイ用トークンに potechan.link の権限は不要です）
+- `potechan.link` の DNS は Cloudflare で管理しています。ルートと `www` はポートフォリオ（Vercel）向けで、DNS only です。`send` と `resend._domainkey` は Resend の送信用レコードです
+- 旧URL `*.workers.dev` も引き続き同じアプリを配信します（`workers_dev = true`）。ブラウザの保存領域はオリジンごとに分かれるため、旧URLのログイン状態・通知購読・ホーム画面のアプリは新URLへ引き継がれません
+
 ## Cloudflare Workers
 
 Worker・CIのbundle検証・デプロイworkflow（mainへのpushで自動実行、手動実行も可）は実装済みです。初回デプロイ前のアカウント固有設定は以下のとおりです。通常の `bun run dev` は Bun + PGLite を使用します。
