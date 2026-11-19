@@ -27,5 +27,8 @@
     "turbo": "2.11.11",
     "typescript": "7.0.2"
   },
+  "overrides": {
+    "source-map-js": "1.2.2"
+  },
   "packageManager": "bun@1.4.4"
 }
