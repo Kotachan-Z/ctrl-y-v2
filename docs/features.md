@@ -89,7 +89,7 @@ README から移した各機能の詳細仕様です。
 - HS256・用途`reset`・親ロール・専用audience・issuerを検証し、期限は15分。DBの親レコードにSHA-256ハッシュと期限を保存し、更新時に原子的に消費します。再発行はメール送信成功後にDBへ保存し、その時点で古いリンクは無効です。送信失敗時は以前のリンクを維持します。既存のログインJWT（access token）は有効期限（1時間）まで有効です。
 - レート制限は要求が正規化したメールごと、確認が送信されたトークンのSHA-256ダイジェストごとに各5回/60秒で、成功もカウントします。要求のメール形式不正やJSON解析エラーはカウントしません。確認ではJSON解析後のパスワード・トークン検証エラーもカウントし、トークンが未指定または文字列でない場合は共通の不正入力用枠を使います。Workersでもリクエストをまたいで保持しますが、複数isolate間の共有はありません。異なるトークンを使う大量リクエストを全体で制限するものではありません。
 - ローカルは `apps/api/.env.local` の `RESEND_API_KEY` を空にすると、APIコンソールにリンクを出します。実メールは送りません。`WEB_ORIGIN=http://127.0.0.1:5173` を設定します。
-- 本番はResendで送信ドメインを検証し、送信権限を持つAPIキーを作成してください。`bunx wrangler secret put RESEND_API_KEY` と `bunx wrangler secret put RESEND_FROM_EMAIL` でキー・送信元（例 `Ctrl-Y <noreply@example.com>`）を設定し、`WEB_ORIGIN` に公開WebのHTTPSオリジンを設定します。同名の値を `.dev.vars` に設定すればWorkersローカル検証にも使えます。本番では未設定でもリンクをログ出力しません。
+- 本番はResendで送信ドメインを検証し、送信権限を持つAPIキーを作成してください。`bunx wrangler secret put RESEND_API_KEY` と `bunx wrangler secret put RESEND_FROM_EMAIL` でキー・送信元（例 `Ctrl-Y <noreply@example.com>`）を設定し、`WEB_ORIGIN` は `wrangler.toml` の `[vars]` に公開WebのHTTPSオリジン（`https://gohoubi.potechan.link`）として設定済みです。ダッシュボードで追加したテキスト変数は次のデプロイで上書きされるため、`WEB_ORIGIN` は設定ファイルで管理します。同名の値を `.dev.vars` に設定すればWorkersローカル検証にも使えます。本番では未設定でもリンクをログ出力しません。
 - [Resend HTTP API](https://resend.com/docs/api-reference/emails/send-email)へ送信します。10秒でタイムアウトし、失敗は秘密値を含めずログに記録します。Workersでは`waitUntil`で配信処理を継続し、ローカルBunでも配信完了を待たずに応答します。永続キューや自動再送はありません。
 - 追加migrationは、本番ではデプロイworkflowが自動適用・検証します。ローカルでは `bun run --filter @ctrl-y/database migration` を実行してください。
 
